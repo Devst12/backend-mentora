@@ -260,16 +260,16 @@
         }
 
         window.selectOption = function(qIndex, val) {
-            if (isSubmitted) return; // Lock selection after submit
+            if (isSubmitted) return; 
             userAnswers[qIndex] = val;
             
-            // Visual Selection
-            for (let i = 0; i < 4; i++) { // Assume 4 options
-                // Find elements by ID pattern approx
+            
+            for (let i = 0; i < 4; i++) { 
+               
                 const el = document.getElementById(`opt-${qIndex}-${['A','B','C','D'][i]}`);
                 if(el) el.classList.remove('correct-selected', 'wrong-selected');
             }
-            document.getElementById(`opt-${qIndex}-${val}`).classList.add('correct-selected'); // Temporary highlight
+            document.getElementById(`opt-${qIndex}-${val}`).classList.add('correct-selected'); 
         };
 
         window.toggleHint = function(index) {
@@ -301,12 +301,12 @@
 
                 if (userSelected === correctAns) {
                     score++;
-                    if (selectedEl) selectedEl.classList.add('correct-selected'); // Green
+                    if (selectedEl) selectedEl.classList.add('correct-selected'); 
                 } else {
-                    if (selectedEl) selectedEl.classList.add('wrong-selected'); // Red
+                    if (selectedEl) selectedEl.classList.add('wrong-selected'); 
                     if (correctEl) {
-                        correctEl.classList.add('reveal-correct'); // Light Green reveal
-                        // Mark as correct answer text
+                        correctEl.classList.add('reveal-correct'); 
+                        
                         correctEl.innerHTML = `<strong>${correctEl.innerHTML}</strong> (Correct Answer)`;
                     }
                 }
@@ -320,7 +320,7 @@
             resultMsg.style.margin = '20px 0';
             resultMsg.innerText = `Score: ${score} / 10`;
             
-            // Replace submit button with result msg
+            
             container.lastElementChild.replaceWith(resultMsg);
         }
     </script>
