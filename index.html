@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Study Assistant</title>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --success: #10b981;
+            --error: #ef4444;
+            --bg-gradient: linear-gradient(135deg, #e0e7ff 0%, #f3e8ff 100%);
+            --surface: #ffffff;
+            --text-main: #1f2937;
+            --text-muted: #6b7280;
+            --border: #e5e7eb;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+        
+        body {
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            color: var(--text-main);
+        }
+
+        .app-container {
+            background: var(--surface);
+            width: 100%;
+            max-width: 700px;
+            border-radius: 12px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header { padding: 24px; border-bottom: 1px solid var(--border); text-align: center; }
+        header h1 { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
+        main { padding: 30px; }
+
+        .upload-zone {
+            border: 2px dashed #cbd5e1;
+            border-radius: 8px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            position: relative;
+            background: #f9fafb;
+            transition: 0.2s;
+        }
+        .upload-zone:hover { border-color: var(--primary); background: #eef2ff; }
+        .upload-zone input[type="file"] { position: absolute; width: 100%; height: 100%; top: 0; left: 0; opacity: 0; cursor: pointer; }
+        .file-name { font-weight: 600; font-size: 1.1rem; }
+
+        .mode-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 20px 0; }
+        
+        .mode-card {
+            padding: 10px; border: 2px solid var(--border); border-radius: 6px;
+            text-align: center; cursor: pointer; font-size: 0.85rem; color: var(--text-muted);
+        }
+        .mode-card:hover { background: #f3f4f6; }
+        .mode-card.active { border-color: var(--primary); background: #e0e7ff; color: var(--primary); font-weight: 600; }
+
+        .btn {
+            width: 100%; padding: 14px; background: var(--primary); color: white;
+            border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer;
+        }
+        .btn:hover { background: var(--primary-hover); }
+        .btn:disabled { background: var(--text-muted); cursor: not-allowed; opacity: 0.7; }
+        
+        .btn-outline {
+            background: transparent; border: 1px solid var(--border); color: var(--text-main); margin-top: 15px;
+        }
+
+        .summary-box { background: #f8fafc; padding: 20px; border-radius: 8px; line-height: 1.6; white-space: pre-wrap; max-height: 500px; overflow-y: auto; }
+
+        .quiz-card { border: 1px solid var(--border); padding: 20px; border-radius: 8px; margin-bottom: 15px; }
+        .q-text { font-weight: 600; margin-bottom: 15px; }
+
+        .option {
+            display: block; padding: 12px; margin-bottom: 8px; background: #f9fafb;
+            border: 1px solid var(--border); border-radius: 4px; cursor: pointer; transition: 0.2s;
+        }
+        .option:hover { background: #f3f4f6; }
+        
+        /* Review States */
+        .option.correct-selected { background: var(--success); color: white; border-color: var(--success); }
+        .option.wrong-selected { background: var(--error); color: white; border-color: var(--error); }
+        .option.reveal-correct { background: var(--success); color: white; opacity: 0.8; }
+
+        .hint-toggle { font-size: 0.8rem; color: var(--primary); cursor: pointer; text-decoration: underline; margin-top: 10px; display: inline-block; }
+        .hint-text { font-size: 0.85rem; color: var(--text-muted); background: #fffbeb; padding: 10px; border-radius: 4px; margin-top: 8px; display: none; }
+
+        .loader { text-align: center; margin: 20px 0; color: var(--text-muted); display: none; }
+        .spinner {
+            border: 3px solid #f3f3f3; border-top: 3px solid var(--primary);
+            border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; margin: 0 auto 10px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        @media (max-width: 600px) { .mode-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <header><h1>AI Study Assistant</h1></header>
+        <main>
+            <div class="upload-zone" id="dropZone">
+                <input type="file" id="fileInput" accept=".pdf">
+                <span class="file-name" id="fileNameDisplay">Click to Upload PDF</span>
+            </div>
+
+            <div class="mode-grid">
+                <div class="mode-card active" onclick="selectMode('summary_short', this)">Short</div>
+                <div class="mode-card" onclick="selectMode('summary_long', this)">Long</div>
+                <div class="mode-card" onclick="selectMode('mcq', this)">MCQ Quiz</div>
+            </div>
+
+            <button id="generateBtn" class="btn" disabled onclick="processFile()">Generate Content</button>
+
+            <div class="loader" id="loader">
+                <div class="spinner"></div>
+                <span id="loadingText">Analyzing whole PDF...</span>
+            </div>
+
+            <div id="resultArea" style="display: none; margin-top: 25px;">
+                <div id="summaryView" class="summary-box" style="display: none;"></div>
+                <div id="activeQuizView" style="display: none;"></div>
+                <button class="btn btn-outline" id="newFileBtn" style="display: none;" onclick="window.location.reload()">Upload New PDF</button>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let selectedMode = 'summary_short';
+        let fileData = null;
+        let quizData = [];
+        let userAnswers = {};
+        let isSubmitted = false;
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const generateBtn = document.getElementById('generateBtn');
+        
+        // File Handling
+        fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = 'var(--primary)'; });
+        dropZone.addEventListener('dragleave', () => dropZone.style.borderColor = '#cbd5e1');
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault(); dropZone.style.borderColor = '#cbd5e1';
+            if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+        });
+
+        function handleFile(file) {
+            if (!file) return;
+            if (file.type !== 'application/pdf') { alert("PDF only."); return; }
+            fileData = file;
+            document.getElementById('fileNameDisplay').textContent = file.name;
+            generateBtn.disabled = false;
+        }
+
+        // Mode Switching Logic - If file exists, auto-generate
+        function selectMode(mode, element) {
+            selectedMode = mode;
+            document.querySelectorAll('.mode-card').forEach(c => c.classList.remove('active'));
+            element.classList.add('active');
+            
+            if (fileData && !generateBtn.disabled) {
+                processFile(); // Auto regenerate on switch
+            }
+        }
+
+        async function processFile() {
+            if (!fileData) return;
+
+            const loader = document.getElementById('loader');
+            const btn = document.getElementById('generateBtn');
+            const resultArea = document.getElementById('resultArea');
+            
+            btn.disabled = true;
+            resultArea.style.display = 'none';
+            loader.style.display = 'block';
+
+            const formData = new FormData();
+            formData.append('file', fileData);
+            formData.append('mode', selectedMode);
+
+            try {
+                const response = await fetch('http://localhost:8000/process_pdf', {
+                    method: 'POST', body: formData
+                });
+                const result = await response.json();
+                
+                loader.style.display = 'none';
+                resultArea.style.display = 'block';
+                document.getElementById('newFileBtn').style.display = 'block';
+                btn.disabled = false; // Re-enable for switching
+
+                if (selectedMode === 'mcq') {
+                    try {
+                        quizData = JSON.parse(result.data);
+                        userAnswers = {}; // Reset answers
+                        isSubmitted = false;
+                        renderQuiz();
+                    } catch (e) { alert("Quiz generation failed."); }
+                } else {
+                    document.getElementById('summaryView').innerText = result.data;
+                    document.getElementById('summaryView').style.display = 'block';
+                    document.getElementById('activeQuizView').style.display = 'none';
+                }
+
+            } catch (error) {
+                console.error(error);
+                alert("Server Error.");
+                loader.style.display = 'none';
+                btn.disabled = false;
+            }
+        }
+
+        function renderQuiz() {
+            const container = document.getElementById('activeQuizView');
+            document.getElementById('summaryView').style.display = 'none';
+            container.style.display = 'block';
+            container.innerHTML = ''; // Clear previous
+
+            quizData.forEach((q, index) => {
+                const card = document.createElement('div');
+                card.className = 'quiz-card';
+                
+                let optionsHTML = '';
+                Object.entries(q.options).forEach(([key, val]) => {
+                    optionsHTML += `
+                        <div class="option" id="opt-${index}-${key}" onclick="selectOption(${index}, '${key}')">
+                            <strong>${key}:</strong> ${val}
+                        </div>
+                    `;
+                });
+
+                card.innerHTML = `
+                    <div class="q-text">${index + 1}. ${q.question}</div>
+                    <div>${optionsHTML}</div>
+                    <span class="hint-toggle" onclick="toggleHint(${index})">Show Hint</span>
+                    <div class="hint-text" id="hint-${index}">${q.hint}</div>
+                `;
+                container.appendChild(card);
+            });
+
+            const submitBtn = document.createElement('button');
+            submitBtn.className = 'btn';
+            submitBtn.innerText = 'Submit Quiz';
+            submitBtn.onclick = calculateScore;
+            container.appendChild(submitBtn);
+        }
+
+        window.selectOption = function(qIndex, val) {
+            if (isSubmitted) return; // Lock selection after submit
+            userAnswers[qIndex] = val;
+            
+            // Visual Selection
+            for (let i = 0; i < 4; i++) { // Assume 4 options
+                // Find elements by ID pattern approx
+                const el = document.getElementById(`opt-${qIndex}-${['A','B','C','D'][i]}`);
+                if(el) el.classList.remove('correct-selected', 'wrong-selected');
+            }
+            document.getElementById(`opt-${qIndex}-${val}`).classList.add('correct-selected'); // Temporary highlight
+        };
+
+        window.toggleHint = function(index) {
+            const hint = document.getElementById(`hint-${index}`);
+            hint.style.display = hint.style.display === 'block' ? 'none' : 'block';
+        };
+
+        function calculateScore() {
+            if (isSubmitted) return;
+            isSubmitted = true;
+            
+            let score = 0;
+            
+            quizData.forEach((q, index) => {
+                const userSelected = userAnswers[index];
+                const correctAns = q.correct;
+
+                // Remove temp highlights
+                ['A','B','C','D'].forEach(k => {
+                    const el = document.getElementById(`opt-${index}-${k}`);
+                    if(el) {
+                        el.classList.remove('correct-selected');
+                        el.onclick = null; // Disable click
+                    }
+                });
+
+                const selectedEl = document.getElementById(`opt-${index}-${userSelected}`);
+                const correctEl = document.getElementById(`opt-${index}-${correctAns}`);
+
+                if (userSelected === correctAns) {
+                    score++;
+                    if (selectedEl) selectedEl.classList.add('correct-selected'); // Green
+                } else {
+                    if (selectedEl) selectedEl.classList.add('wrong-selected'); // Red
+                    if (correctEl) {
+                        correctEl.classList.add('reveal-correct'); // Light Green reveal
+                        // Mark as correct answer text
+                        correctEl.innerHTML = `<strong>${correctEl.innerHTML}</strong> (Correct Answer)`;
+                    }
+                }
+            });
+
+            const container = document.getElementById('activeQuizView');
+            const resultMsg = document.createElement('div');
+            resultMsg.style.textAlign = 'center';
+            resultMsg.style.fontSize = '1.5rem';
+            resultMsg.style.fontWeight = 'bold';
+            resultMsg.style.margin = '20px 0';
+            resultMsg.innerText = `Score: ${score} / 10`;
+            
+            // Replace submit button with result msg
+            container.lastElementChild.replaceWith(resultMsg);
+        }
+    </script>
+</body>
+</html>
