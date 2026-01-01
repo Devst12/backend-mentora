@@ -228,7 +228,7 @@
             const container = document.getElementById('activeQuizView');
             document.getElementById('summaryView').style.display = 'none';
             container.style.display = 'block';
-            container.innerHTML = ''; // Clear previous
+            container.innerHTML = '';
 
             quizData.forEach((q, index) => {
                 const card = document.createElement('div');
@@ -287,7 +287,7 @@
                 const userSelected = userAnswers[index];
                 const correctAns = q.correct;
 
-                // Remove temp highlights
+                
                 ['A','B','C','D'].forEach(k => {
                     const el = document.getElementById(`opt-${index}-${k}`);
                     if(el) {
