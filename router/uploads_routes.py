@@ -7,16 +7,15 @@ router = APIRouter()
 
 mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
 client = MongoClient(mongo_uri)
-db = client["MentoraDB"]  # <-- select DB here
-uploads_col = db["uploads"]  # <-- your uploads collection
+db = client["MentoraDB"]  
+uploads_col = db["uploads"] 
 
-# Helper to serialize Mongo docs
+
 def serialize_doc(doc):
     doc["_id"] = str(doc["_id"])
     return doc
 
-# Fetch all uploads
 @router.get("/uploads")
 def get_all_uploads():
-    uploads = list(uploads_col.find().sort("_id", -1))  # newest first
+    uploads = list(uploads_col.find().sort("_id", -1)) 
     return [serialize_doc(u) for u in uploads]
