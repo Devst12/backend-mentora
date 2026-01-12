@@ -1,75 +1,95 @@
-# router/user_routes.py
+# backend/user_routes.py
 import os
-from fastapi import APIRouter, Request
+from datetime import datetime, timezone
+from fastapi import APIRouter, HTTPException, Header, Depends
+from pydantic import BaseModel
 from pymongo import MongoClient
+from jose import jwt, JWTError
 from dotenv import load_dotenv
 
-# Load env variables
-current_dir = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(current_dir, '.env'))
+# ── Load environment variables ──
+load_dotenv()
+mongo_uri = os.getenv("MONGODB_URI")
+SECRET = os.getenv("NEXTAUTH_SECRET")
+ALGORITHM = "HS256"
 
-router = APIRouter()
+client = MongoClient(mongo_uri)
+db = client.get_default_database()
+users_collection = db["appUsers"]
 
-# --- DATABASE SETUP ---
-mongo_uri = os.getenv("MONGO_URI")
+# ── Router ──
+router = APIRouter(tags=["Users"])
 
-if not mongo_uri:
-    print("❌ ERROR: MONGO_URI is missing!")
-else:
-    try:
-        client = MongoClient(mongo_uri)
-        db = client['mentora_db']
-        users_collection = db['appUsers']
-        print("✅ Connected to MongoDB! Saving data to database: 'mentora_db'")
-    except Exception as e:
-        print(f"❌ Connection Failed: {e}")
+# ── Pydantic model ──
+class SyncUserModel(BaseModel):
+    name: str
+    email: str
+    image: str | None = None
 
-
-# ---------------- ROOT ----------------
-@router.get("/")
-def home():
-    return {"message": "✅ Python Server is Running."}
-
-
-# ---------------- SYNC USER ----------------
-@router.post("/api/sync-user")
-async def sync_user(request: Request):
-    print("\n🔹 INCOMING SIGN-IN REQUEST 🔹")
-    data = await request.json()
-    print(f"📥 Received Payload: {data}")
-
-    email = data.get("email")
+# ── Sync user endpoint ──
+@router.post("/sync-user")
+async def sync_user(data: SyncUserModel):
+    email = data.email
     if not email:
-        print("❌ Error: Email is missing from request")
-        return {"error": "No email"}
-
-    user_data = {
-        "email": email,
-        "name": data.get("name"),
-        "image": data.get("image"),
-    }
+        raise HTTPException(status_code=400, detail="Email required")
 
     try:
         result = users_collection.update_one(
             {"email": email},
-            {"$set": user_data},
-            upsert=True
+            {
+                "$set": {
+                    "email": email,
+                    "name": data.name,
+                    "image": data.image,
+                    "lastLogin": datetime.now(timezone.utc),
+                },
+                "$setOnInsert": {
+                    "contributionPoints": 0,
+                    "notesCount": 0,
+                    "badgesCount": 0,
+                    "createdAt": datetime.now(timezone.utc),
+                },
+            },
+            upsert=True,
         )
-
-        if result.upserted_id:
-            print(f"🎉 NEW USER CREATED in 'mentora_db': {email}")
-        else:
-            print(f"✅ USER UPDATED in 'mentora_db': {email}")
-
-        return {"success": True}
-
+        return {
+            "matched": result.matched_count,
+            "upserted_id": str(result.upserted_id) if result.upserted_id else None,
+        }
     except Exception as e:
-        print(f"❌ DB WRITE ERROR: {e}")
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------- USER STATS ----------------
-@router.get("/api/user-stats")
-def get_user_stats(email: str):
-    user = users_collection.find_one({"email": email}, {"_id": 0})
-    return user if user else {}
+# ── Helper function: verify JWT token ──
+def get_current_user_email(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+    
+    parts = authorization.split(" ")
+    if len(parts) != 2 or parts[0] != "Bearer":
+        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
+
+    token = parts[1]
+    try:
+        payload = jwt.decode(token, SECRET, algorithms=[ALGORITHM])
+        email = payload.get("email")
+        if not email:
+            raise HTTPException(status_code=401, detail="Token missing email")
+        return email
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid or expired token: {str(e)}")
+
+
+# ── Get user stats endpoint ──
+@router.get("/user-stats")
+async def user_stats(email: str = None, current_user_email: str = Depends(get_current_user_email)):
+    # Use query param if provided, else fallback to JWT email
+    target_email = email or current_user_email
+    user = users_collection.find_one({"email": target_email}, {"_id": 0})
+    if not user:
+        return {
+            "contributionPoints": 0,
+            "notesCount": 0,
+            "badgesCount": 0,
+        }
+    return user

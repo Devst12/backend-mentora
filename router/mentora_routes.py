@@ -1,132 +1,143 @@
-from fastapi import APIRouter, HTTPException, status
-from pymongo import MongoClient
-from bson.objectid import ObjectId
-from bson.errors import InvalidId
+from fastapi import APIRouter, Depends, HTTPException
+from bson import ObjectId
 from datetime import datetime, timezone
-from typing import List, Optional
-from pydantic import BaseModel
-import os
 
-router = APIRouter()
+from database import questions_col
+from auth import get_current_user_email
+from models import QuestionCreate, AnswerCreate, CommentCreate
+from utils import serialize
 
-mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
-db = client["MentoraDB"]
-questions_col = db["questions"]
-answers_col = db["answers"]
+router = APIRouter(prefix="/MentoraQ")
 
-class QuestionCreate(BaseModel):
-    title: str
-    description: Optional[str] = ""
-    tags: Optional[List[str]] = []
 
-class AnswerCreate(BaseModel):
-    text: str
-
-class CommentCreate(BaseModel):
-    text: str
-
-def serialize_doc(doc):
-    if not doc:
-        return None
-
-    doc["_id"] = str(doc["_id"])
-
-    if isinstance(doc.get("created_at"), datetime):
-        doc["created_at"] = doc["created_at"].isoformat()
-
-    if "comments" in doc:
-        for c in doc["comments"]:
-            if "_id" in c:
-                c["_id"] = str(c["_id"])
-            if isinstance(c.get("created_at"), datetime):
-                c["created_at"] = c["created_at"].isoformat()
-
-    return doc
-
-# ────────────────── Questions ──────────────────
-@router.get("/MentoraQ/questions")
-def get_questions():
-    data = list(questions_col.find().sort("_id", -1))
-    return [serialize_doc(q) for q in data]
-
-@router.post("/MentoraQ/questions", status_code=201)
-def create_question(q: QuestionCreate):
-    new_q = {
+# ─────────── CREATE QUESTION ───────────
+@router.post("/questions")
+def create_question(q: QuestionCreate, email=Depends(get_current_user_email)):
+    question = {
         "title": q.title,
         "description": q.description,
         "tags": q.tags,
-        "created_at": datetime.now(timezone.utc),
+        "author_email": email,
+
         "votes": 0,
-        "comments": []
+        "likes": 0,
+        "dislikes": 0,
+        "liked_by": [],
+        "disliked_by": [],
+
+        "answers": [],
+        "comments": [],
+        "accepted_answer_id": None,
+        "created_at": datetime.now(timezone.utc),
     }
-    res = questions_col.insert_one(new_q)
-    return serialize_doc(questions_col.find_one({"_id": res.inserted_id}))
 
-@router.get("/MentoraQ/questions/{id}")
-def get_question(id: str):
-    try:
-        oid = ObjectId(id)
-    except InvalidId:
-        raise HTTPException(400, "Invalid ID")
+    res = questions_col.insert_one(question)
+    return serialize(questions_col.find_one({"_id": res.inserted_id}))
 
-    q = questions_col.find_one({"_id": oid})
+
+# ─────────── GET ALL QUESTIONS ───────────
+@router.get("/questions")
+def get_questions():
+    return [serialize(q) for q in questions_col.find().sort("_id", -1)]
+
+
+# ─────────── GET SINGLE QUESTION ───────────
+@router.get("/questions/{qid}")
+def get_question(qid: str):
+    q = questions_col.find_one({"_id": ObjectId(qid)})
     if not q:
         raise HTTPException(404, "Question not found")
-    return serialize_doc(q)
+    return serialize(q)
 
-# ────────────────── Answers ──────────────────
-@router.get("/MentoraQ/questions/{id}/answers")
-def get_answers(id: str):
-    data = list(answers_col.find({"question_id": id}))
-    return [serialize_doc(a) for a in data]
 
-@router.post("/MentoraQ/questions/{id}/answers")
-def post_answer(id: str, a: AnswerCreate):
-    try:
-        ObjectId(id)
-    except InvalidId:
-        raise HTTPException(400, "Invalid ID")
+# ─────────── GET ANSWERS ───────────
+@router.get("/questions/{qid}/answers")
+def get_answers(qid: str):
+    q = questions_col.find_one({"_id": ObjectId(qid)})
+    if not q:
+        raise HTTPException(404, "Question not found")
+    return q.get("answers", [])
 
-    new_a = {
-        "question_id": id,
+
+# ─────────── ADD ANSWER ───────────
+@router.post("/questions/{qid}/answer")
+def add_answer(qid: str, a: AnswerCreate, email=Depends(get_current_user_email)):
+    answer = {
+        "_id": ObjectId(),
         "text": a.text,
+        "author_email": email,
+
         "votes": 0,
+        "likes": 0,
+        "dislikes": 0,
+        "liked_by": [],
+        "disliked_by": [],
+        "helpful": 0,
+        "not_helpful": 0,
+
         "comments": [],
-        "created_at": datetime.now(timezone.utc)
+        "created_at": datetime.now(timezone.utc),
     }
-    answers_col.insert_one(new_a)
+
+    questions_col.update_one(
+        {"_id": ObjectId(qid)},
+        {"$push": {"answers": answer}}
+    )
+
     return {"msg": "Answer added"}
 
-# ────────────────── Votes ──────────────────
-@router.post("/MentoraQ/vote/{type}/{id}/{value}")
-def vote(type: str, id: str, value: int):
-    col = questions_col if type == "question" else answers_col
-    try:
-        oid = ObjectId(id)
-    except InvalidId:
-        raise HTTPException(400, "Invalid ID")
 
-    col.update_one({"_id": oid}, {"$inc": {"votes": value}})
-    return {"msg": "Voted"}
+# ─────────── COMMENT QUESTION ───────────
+@router.post("/questions/{qid}/comment")
+def comment_question(qid: str, c: CommentCreate, email=Depends(get_current_user_email)):
+    comment = {
+        "_id": ObjectId(),
+        "text": c.text,
+        "author_email": email,
+        "likes": 0,
+        "dislikes": 0,
+        "created_at": datetime.now(timezone.utc),
+    }
 
-# ────────────────── Comments ──────────────────
-@router.post("/MentoraQ/comment/{type}/{id}")
-def comment(type: str, id: str, c: CommentCreate):
-    col = questions_col if type == "question" else answers_col
-    try:
-        oid = ObjectId(id)
-    except InvalidId:
-        raise HTTPException(400, "Invalid ID")
-
-    col.update_one(
-        {"_id": oid},
-        {"$push": {
-            "comments": {
-                "_id": ObjectId(),
-                "text": c.text,
-                "created_at": datetime.now(timezone.utc)
-            }
-        }}
+    questions_col.update_one(
+        {"_id": ObjectId(qid)},
+        {"$push": {"comments": comment}}
     )
+
     return {"msg": "Comment added"}
+
+
+# ─────────── COMMENT ANSWER ───────────
+@router.post("/questions/{qid}/answer/{aid}/comment")
+def comment_answer(qid: str, aid: str, c: CommentCreate, email=Depends(get_current_user_email)):
+    comment = {
+        "_id": ObjectId(),
+        "text": c.text,
+        "author_email": email,
+        "likes": 0,
+        "dislikes": 0,
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    questions_col.update_one(
+        {"_id": ObjectId(qid), "answers._id": ObjectId(aid)},
+        {"$push": {"answers.$.comments": comment}}
+    )
+
+    return {"msg": "Comment added"}
+
+
+# ─────────── ACCEPT ANSWER ───────────
+@router.post("/questions/{qid}/accept/{aid}")
+def accept_answer(qid: str, aid: str, email=Depends(get_current_user_email)):
+    q = questions_col.find_one({"_id": ObjectId(qid)})
+
+    if q["author_email"] != email:
+        raise HTTPException(403, "Only owner can accept answer")
+
+    questions_col.update_one(
+        {"_id": ObjectId(qid)},
+        {"$set": {"accepted_answer_id": ObjectId(aid)}}
+    )
+
+    return {"msg": "Answer accepted"}

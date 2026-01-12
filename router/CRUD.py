@@ -14,7 +14,7 @@ from utils import generate_custom_slug, get_current_user  # We'll define these h
 
 # ────────────── INIT ROUTER & DB ──────────────
 router = APIRouter()
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI")
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = client["mentora_db"]
 pdf_collection = db["pdf_uploads"]

@@ -5,7 +5,7 @@ from bson.objectid import ObjectId
 
 router = APIRouter()
 
-mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+mongo_uri = os.getenv("MONGO_URI")
 client = MongoClient(mongo_uri)
 db = client["MentoraDB"]  
 uploads_col = db["uploads"] 
