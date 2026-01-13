@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from router.ocr_routes import router as ocr_router
 from router.user_routes import router as user_router
-from router.mentora_routes import router as mentora_router
+
 from router.uploads_routes import router as uploads_router 
 
 
@@ -23,7 +23,7 @@ app.add_middleware(
 # ──────────────────────── MOUNT ROUTES ────────────────────────
 app.include_router(ocr_router)
 app.include_router(user_router)
-app.include_router(mentora_router)
+
 app.include_router(uploads_router) 
 
 # ──────────────────────── ROOT ────────────────────────
