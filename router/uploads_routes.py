@@ -23,7 +23,7 @@ db = client["mentora"]
 # ✅ Connect to Collections
 uploads_col = db["pdfuploads"]
 categories_col = db["categories"] 
-users_col = db["appUsers"]  # <--- Correct collection name based on your screenshot
+users_col = db["appUsers"]  
 
 # --- MODELS ---
 PyObjectId = Annotated[str, BeforeValidator(str)]
