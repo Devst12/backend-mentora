@@ -1,4 +1,4 @@
-
+#main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,6 +7,7 @@ from router.ocr_routes import router as ocr_router
 from router.user_routes import router as user_router
 
 from router.uploads_routes import router as uploads_router 
+from router.mcq_routes import router as mcq_router
 
 
 app = FastAPI(title="Unified Backend", version="1.0.0")
@@ -23,7 +24,7 @@ app.add_middleware(
 # ──────────────────────── MOUNT ROUTES ────────────────────────
 app.include_router(ocr_router)
 app.include_router(user_router)
-
+app.include_router(mcq_router)
 app.include_router(uploads_router) 
 
 # ──────────────────────── ROOT ────────────────────────
