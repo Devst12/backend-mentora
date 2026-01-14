@@ -23,7 +23,7 @@ db = client["mentora"]
 # ✅ Connect to Collections
 uploads_col = db["pdfuploads"]
 categories_col = db["categories"] 
-users_col = db["appUsers"]  
+users_col = db["appUsers"]  # <--- Still using your correct 'appUsers'
 
 # --- MODELS ---
 PyObjectId = Annotated[str, BeforeValidator(str)]
@@ -61,7 +61,7 @@ def generate_slug(title: str):
     return f"{slugify(title)}-{unique_suffix}"
 
 # ==========================================
-# 🟢 1. CATEGORY ROUTES (Admin)
+# 🟢 1. CATEGORY ROUTES
 # ==========================================
 @router.get("/api/categories")
 def get_categories():
@@ -105,7 +105,7 @@ def update_category(id: str, category: CategorySchema):
     return {"_id": id, "name": clean_name}
 
 # ==========================================
-# 🔵 2. PDF UPLOAD ROUTES (User)
+# 🔵 2. PDF UPLOAD ROUTES
 # ==========================================
 
 @router.post("/api/upload-file")
@@ -118,6 +118,7 @@ async def upload_file(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
     return {"url": f"http://127.0.0.1:8000/static/pdfs/{unique_name}"}
 
+# ✅ PRIVATE: Get MY Uploads (Requires Email)
 @router.get("/api/my-uploads")
 def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = "", user_email: str = Header(..., alias="x-user-email")):
     limit = 30
@@ -132,8 +133,9 @@ def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: st
         "currentPage": page, "totalPages": max(1, math.ceil(total / limit))
     }
 
+# ✅ PUBLIC: Get ALL Uploads (NO Email Required) <--- FIXED THIS
 @router.get("/api/uploads")
-def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = "", user_email: str = Header(..., alias="x-user-email")):
+def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = ""):
     limit = 30
     skip = (page - 1) * limit
     query = {} 
@@ -156,7 +158,6 @@ def get_single_upload(id: str):
 # 🎁 REWARD LOGIC: Create Upload & Add 50 Points
 @router.post("/api/uploads", status_code=201)
 def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_user_email)):
-    # 1. Save Upload
     new_doc = upload.dict()
     new_doc.update({
         "uploaderEmail": user_email,
@@ -166,7 +167,7 @@ def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_us
     })
     res = uploads_col.insert_one(new_doc)
     
-    # 2. ✅ ADD 50 CONTRIBUTION POINTS
+    # Add Points
     users_col.update_one(
         {"email": user_email}, 
         {"$inc": {"contributionPoints": 50}}
@@ -178,14 +179,10 @@ def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_us
 @router.delete("/api/uploads/{id}")
 def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
     if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
-    
-    # 1. Delete the file
     res = uploads_col.delete_one({"_id": ObjectId(id), "uploaderEmail": user_email})
+    if res.deleted_count == 0: raise HTTPException(404, "Not found or forbidden")
     
-    if res.deleted_count == 0: 
-        raise HTTPException(404, "Not found or forbidden")
-        
-    # 2. 🔻 DEDUCT 50 POINTS
+    # Remove Points
     users_col.update_one(
         {"email": user_email}, 
         {"$inc": {"contributionPoints": -50}}
@@ -198,16 +195,10 @@ def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
 # ==========================================
 @router.get("/api/user-stats")
 def get_user_stats(user_email: str = Header(..., alias="x-user-email")):
-    # 1. Get User Data
     user = users_col.find_one({"email": user_email})
-    
-    # 2. Get Points
     points = user.get("contributionPoints", 0) if user else 0
-    
-    # 3. Count Uploads
     notes_count = uploads_col.count_documents({"uploaderEmail": user_email})
     
-    # 4. Calculate Badges
     badges = 0
     if notes_count >= 1: badges += 1
     if points >= 100: badges += 1
