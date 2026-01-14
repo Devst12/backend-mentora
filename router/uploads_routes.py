@@ -1,48 +1,27 @@
-from fastapi import APIRouter, HTTPException, Depends, Header, Query
+from fastapi import APIRouter, HTTPException, Depends, Header, Query, UploadFile, File
 from pymongo import MongoClient
 from pydantic import BaseModel, Field, BeforeValidator
 from typing import List, Optional, Annotated
 from datetime import datetime
 from bson import ObjectId
 import os
+import shutil
+from pathlib import Path
 from slugify import slugify
 import math
 from dotenv import load_dotenv
 
-# 1. LOAD ENVIRONMENT VARIABLES
-# This forces Python to look for your .env file
 load_dotenv()
 
 router = APIRouter()
 
-# --- DATABASE SETUP (WITH DEBUGGING) ---
-mongo_uri = os.getenv("MONGODB_URI")
+# --- DATABASE SETUP ---
+mongo_uri = os.getenv("MONGODB_URI") 
+client = MongoClient(mongo_uri)
+db = client["mentora"]
+uploads_col = db["pdfuploads"]
 
-# DEBUG PRINT 1: Check Connection String
-if not mongo_uri:
-    print("❌ CRITICAL ERROR: 'MONGODB_URI' not found in .env file! Using localhost.")
-    mongo_uri = "mongodb://localhost:27017"
-else:
-    # Print first 20 chars only for security
-    print(f"✅ DEBUG: Found Mongo URI: {mongo_uri[:20]}...") 
-
-try:
-    client = MongoClient(mongo_uri)
-    # Force a connection check
-    client.admin.command('ping')
-    print("✅ DEBUG: Successfully connected to MongoDB Server.")
-except Exception as e:
-    print(f"❌ CRITICAL ERROR: Could not connect to MongoDB. Error: {e}")
-
-# DEBUG PRINT 2: Check Database & Collection Names
-db_name = "mentora"          # Must match your Compass DB name
-col_name = "pdfuploads"      # Must match your Mongoose collection name
-
-db = client[db_name]
-uploads_col = db[col_name]
-print(f"✅ DEBUG: Writing data to Database: '{db_name}' -> Collection: '{col_name}'")
-
-# --- MODELS (VALIDATION) ---
+# --- MODELS ---
 PyObjectId = Annotated[str, BeforeValidator(str)]
 
 class UploadSchema(BaseModel):
@@ -76,10 +55,19 @@ def generate_slug(title: str):
 
 # --- ROUTES ---
 
-@router.get("/api/uploads")
-def get_uploads(page: int = Query(1, ge=1), search: str = "", category: str = "All", user_email: str = Depends(get_current_user_email)):
+# ✅ 1. THE PRIVATE ROUTE (Strictly for My Uploads)
+# This is what your /uploads page uses. It requires an email header.
+@router.get("/api/my-uploads")
+def get_my_uploads(
+    page: int = Query(1, ge=1), 
+    category: str = "All",
+    search: str = "",
+    user_email: str = Header(..., alias="x-user-email") # <--- REQUIRED
+):
     limit = 30
     skip = (page - 1) * limit
+    
+    # 🔒 FILTER: Only show files where uploaderEmail == logged-in email
     query = {"uploaderEmail": user_email}
     
     if category != "All": query["category"] = category
@@ -95,46 +83,51 @@ def get_uploads(page: int = Query(1, ge=1), search: str = "", category: str = "A
         "totalPages": max(1, math.ceil(total / limit))
     }
 
+# 2. GET ALL (Public Landing Page)
+@router.get("/api/uploads")
+def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = ""):
+    limit = 30
+    skip = (page - 1) * limit
+    query = {} 
+    
+    if category != "All": query["category"] = category
+    if search: 
+        query["$or"] = [{"title": {"$regex": search, "$options": "i"}}, {"tags": {"$in": [search]}}]
+
+    total = uploads_col.count_documents(query)
+    cursor = uploads_col.find(query).sort("createdAt", -1).skip(skip).limit(limit)
+    
+    return {
+        "uploads": [UploadResponse(**u) for u in cursor],
+        "totalPages": max(1, math.ceil(total / limit))
+    }
+
+# 3. GET SINGLE PDF
+@router.get("/api/uploads/{id}")
+def get_single_upload(id: str):
+    if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
+    doc = uploads_col.find_one({"_id": ObjectId(id)})
+    if not doc: raise HTTPException(404, "Not found")
+    return UploadResponse(**doc)
+
+# 4. POST METADATA (Create Upload)
 @router.post("/api/uploads", status_code=201)
 def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_user_email)):
-    print(f"📥 DEBUG: Receiving Upload Request: {upload.title}")
-
-    if len("".join(upload.tags)) > 500: raise HTTPException(400, "Tags too long")
-    
     new_doc = upload.dict()
     new_doc.update({
-        "uploaderEmail": user_email,
+        "uploaderEmail": user_email, # Saves the logged-in email here
         "slug": generate_slug(upload.title),
         "createdAt": datetime.now(),
         "updatedAt": datetime.now()
     })
-    
-    try:
-        res = uploads_col.insert_one(new_doc)
-        print(f"💾 DEBUG: Saved to DB with ID: {res.inserted_id}")
-        return UploadResponse(**uploads_col.find_one({"_id": res.inserted_id}))
-    except Exception as e:
-        print(f"❌ ERROR Saving to DB: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    res = uploads_col.insert_one(new_doc)
+    return UploadResponse(**uploads_col.find_one({"_id": res.inserted_id}))
 
-@router.put("/api/uploads/{id}")
-def update_upload(id: str, upload: UploadSchema, user_email: str = Depends(get_current_user_email)):
-    if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
-    
-    existing = uploads_col.find_one({"_id": ObjectId(id)})
-    if not existing or existing["uploaderEmail"] != user_email:
-        raise HTTPException(403, "Forbidden")
-
-    update_data = upload.dict()
-    if upload.title != existing["title"]: update_data["slug"] = generate_slug(upload.title)
-    update_data["updatedAt"] = datetime.now()
-
-    uploads_col.update_one({"_id": ObjectId(id)}, {"$set": update_data})
-    return UploadResponse(**uploads_col.find_one({"_id": ObjectId(id)}))
-
+# 5. DELETE (Secure Delete)
 @router.delete("/api/uploads/{id}")
 def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
     if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
+    # Only delete if the ID exists AND the email matches
     res = uploads_col.delete_one({"_id": ObjectId(id), "uploaderEmail": user_email})
     if res.deleted_count == 0: raise HTTPException(404, "Not found or forbidden")
     return {"message": "Deleted"}
