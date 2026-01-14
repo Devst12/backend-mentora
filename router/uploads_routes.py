@@ -19,7 +19,11 @@ router = APIRouter()
 mongo_uri = os.getenv("MONGODB_URI") 
 client = MongoClient(mongo_uri)
 db = client["mentora"]
+
+# ✅ Connect to Collections
 uploads_col = db["pdfuploads"]
+categories_col = db["categories"] 
+users_col = db["appUsers"]  # <--- Correct collection name based on your screenshot
 
 # --- MODELS ---
 PyObjectId = Annotated[str, BeforeValidator(str)]
@@ -43,6 +47,9 @@ class UploadResponse(UploadSchema):
         populate_by_name = True
         json_encoders = {datetime: lambda v: v.isoformat()}
 
+class CategorySchema(BaseModel):
+    name: str
+
 # --- HELPER: AUTH ---
 def get_current_user_email(x_user_email: str = Header(None)):
     if not x_user_email:
@@ -53,56 +60,92 @@ def generate_slug(title: str):
     unique_suffix = datetime.now().strftime("%f")
     return f"{slugify(title)}-{unique_suffix}"
 
-# --- ROUTES ---
+# ==========================================
+# 🟢 1. CATEGORY ROUTES (Admin)
+# ==========================================
+@router.get("/api/categories")
+def get_categories():
+    cats = list(categories_col.find({}, {"_id": 1, "name": 1}).sort("createdAt", -1))
+    cleaned_cats = []
+    for c in cats:
+        cleaned_cats.append({
+            "_id": str(c["_id"]),
+            "name": c.get("name", "Unnamed")
+        })
+    return cleaned_cats
 
-# ✅ 1. THE PRIVATE ROUTE (Strictly for My Uploads)
-# This is what your /uploads page uses. It requires an email header.
+@router.post("/api/categories", status_code=201)
+def create_category(category: CategorySchema):
+    clean_name = category.name.strip()
+    if not clean_name: raise HTTPException(400, "Name required")
+    slug = slugify(clean_name)
+    if categories_col.find_one({"slug": slug}):
+        raise HTTPException(400, "Category already exists")
+    new_cat = {
+        "name": clean_name, "slug": slug,
+        "createdAt": datetime.now(), "updatedAt": datetime.now(), "__v": 0
+    }
+    res = categories_col.insert_one(new_cat)
+    return {"_id": str(res.inserted_id), "name": clean_name}
+
+@router.put("/api/categories/{id}")
+def update_category(id: str, category: CategorySchema):
+    if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
+    clean_name = category.name.strip()
+    if not clean_name: raise HTTPException(400, "Name required")
+    slug = slugify(clean_name)
+    existing = categories_col.find_one({"slug": slug})
+    if existing and str(existing["_id"]) != id:
+        raise HTTPException(400, "Category name already taken")
+    result = categories_col.update_one(
+        {"_id": ObjectId(id)},
+        {"$set": {"name": clean_name, "slug": slug, "updatedAt": datetime.now()}}
+    )
+    if result.matched_count == 0: raise HTTPException(404, "Category not found")
+    return {"_id": id, "name": clean_name}
+
+# ==========================================
+# 🔵 2. PDF UPLOAD ROUTES (User)
+# ==========================================
+
+@router.post("/api/upload-file")
+async def upload_file(file: UploadFile = File(...)):
+    upload_dir = Path("static/pdfs")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    unique_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{file.filename}"
+    file_path = upload_dir / unique_name
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return {"url": f"http://127.0.0.1:8000/static/pdfs/{unique_name}"}
+
 @router.get("/api/my-uploads")
-def get_my_uploads(
-    page: int = Query(1, ge=1), 
-    category: str = "All",
-    search: str = "",
-    user_email: str = Header(..., alias="x-user-email") # <--- REQUIRED
-):
+def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = "", user_email: str = Header(..., alias="x-user-email")):
     limit = 30
     skip = (page - 1) * limit
-    
-    # 🔒 FILTER: Only show files where uploaderEmail == logged-in email
     query = {"uploaderEmail": user_email}
-    
     if category != "All": query["category"] = category
-    if search: 
-        query["$or"] = [{"title": {"$regex": search, "$options": "i"}}, {"tags": {"$in": [search]}}]
-
+    if search: query["$or"] = [{"title": {"$regex": search, "$options": "i"}}, {"tags": {"$in": [search]}}]
     total = uploads_col.count_documents(query)
     cursor = uploads_col.find(query).sort("createdAt", -1).skip(skip).limit(limit)
-    
     return {
         "uploads": [UploadResponse(**u) for u in cursor],
-        "currentPage": page,
-        "totalPages": max(1, math.ceil(total / limit))
+        "currentPage": page, "totalPages": max(1, math.ceil(total / limit))
     }
 
-# 2. GET ALL (Public Landing Page)
 @router.get("/api/uploads")
-def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = ""):
+def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = "", user_email: str = Header(..., alias="x-user-email")):
     limit = 30
     skip = (page - 1) * limit
     query = {} 
-    
     if category != "All": query["category"] = category
-    if search: 
-        query["$or"] = [{"title": {"$regex": search, "$options": "i"}}, {"tags": {"$in": [search]}}]
-
+    if search: query["$or"] = [{"title": {"$regex": search, "$options": "i"}}, {"tags": {"$in": [search]}}]
     total = uploads_col.count_documents(query)
     cursor = uploads_col.find(query).sort("createdAt", -1).skip(skip).limit(limit)
-    
     return {
         "uploads": [UploadResponse(**u) for u in cursor],
         "totalPages": max(1, math.ceil(total / limit))
     }
 
-# 3. GET SINGLE PDF
 @router.get("/api/uploads/{id}")
 def get_single_upload(id: str):
     if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
@@ -110,24 +153,68 @@ def get_single_upload(id: str):
     if not doc: raise HTTPException(404, "Not found")
     return UploadResponse(**doc)
 
-# 4. POST METADATA (Create Upload)
+# 🎁 REWARD LOGIC: Create Upload & Add 50 Points
 @router.post("/api/uploads", status_code=201)
 def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_user_email)):
+    # 1. Save Upload
     new_doc = upload.dict()
     new_doc.update({
-        "uploaderEmail": user_email, # Saves the logged-in email here
+        "uploaderEmail": user_email,
         "slug": generate_slug(upload.title),
         "createdAt": datetime.now(),
         "updatedAt": datetime.now()
     })
     res = uploads_col.insert_one(new_doc)
+    
+    # 2. ✅ ADD 50 CONTRIBUTION POINTS
+    users_col.update_one(
+        {"email": user_email}, 
+        {"$inc": {"contributionPoints": 50}}
+    )
+    
     return UploadResponse(**uploads_col.find_one({"_id": res.inserted_id}))
 
-# 5. DELETE (Secure Delete)
+# 🔻 PENALTY LOGIC: Delete Upload & Remove 50 Points
 @router.delete("/api/uploads/{id}")
 def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
     if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
-    # Only delete if the ID exists AND the email matches
+    
+    # 1. Delete the file
     res = uploads_col.delete_one({"_id": ObjectId(id), "uploaderEmail": user_email})
-    if res.deleted_count == 0: raise HTTPException(404, "Not found or forbidden")
-    return {"message": "Deleted"}
+    
+    if res.deleted_count == 0: 
+        raise HTTPException(404, "Not found or forbidden")
+        
+    # 2. 🔻 DEDUCT 50 POINTS
+    users_col.update_one(
+        {"email": user_email}, 
+        {"$inc": {"contributionPoints": -50}}
+    )
+    
+    return {"message": "Deleted and points deducted"}
+
+# ==========================================
+# 📊 3. USER STATS (Profile Page)
+# ==========================================
+@router.get("/api/user-stats")
+def get_user_stats(user_email: str = Header(..., alias="x-user-email")):
+    # 1. Get User Data
+    user = users_col.find_one({"email": user_email})
+    
+    # 2. Get Points
+    points = user.get("contributionPoints", 0) if user else 0
+    
+    # 3. Count Uploads
+    notes_count = uploads_col.count_documents({"uploaderEmail": user_email})
+    
+    # 4. Calculate Badges
+    badges = 0
+    if notes_count >= 1: badges += 1
+    if points >= 100: badges += 1
+    
+    return {
+        "contributionPoints": points,
+        "notesCount": notes_count,
+        "badgesCount": badges,
+        "image": user.get("image") if user else None
+    }
