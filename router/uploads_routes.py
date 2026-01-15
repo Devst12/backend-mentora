@@ -50,7 +50,6 @@ class UploadResponse(UploadSchema):
 class CategorySchema(BaseModel):
     name: str
 
-# --- HELPER: AUTH ---
 def get_current_user_email(x_user_email: str = Header(None)):
     if not x_user_email:
         raise HTTPException(status_code=401, detail="Unauthorized: No Email Header")
@@ -60,9 +59,7 @@ def generate_slug(title: str):
     unique_suffix = datetime.now().strftime("%f")
     return f"{slugify(title)}-{unique_suffix}"
 
-# ==========================================
-# 🟢 1. CATEGORY ROUTES
-# ==========================================
+
 @router.get("/api/categories")
 def get_categories():
     cats = list(categories_col.find({}, {"_id": 1, "name": 1}).sort("createdAt", -1))

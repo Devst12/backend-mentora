@@ -9,6 +9,9 @@ from router.user_routes import router as user_router
 from router.uploads_routes import router as uploads_router 
 from router.mcq_routes import router as mcq_router
 
+from router.category_routes import router as category_router
+
+
 
 app = FastAPI(title="Unified Backend", version="1.0.0")
 
@@ -26,6 +29,7 @@ app.include_router(ocr_router)
 app.include_router(user_router)
 app.include_router(mcq_router)
 app.include_router(uploads_router) 
+app.include_router(category_router)
 
 # ──────────────────────── ROOT ────────────────────────
 @app.get("/")
