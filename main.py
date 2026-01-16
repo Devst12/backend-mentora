@@ -10,6 +10,10 @@ from router.uploads_routes import router as uploads_router
 from router.mcq_routes import router as mcq_router
 
 from router.category_routes import router as category_router
+from router.qa_routes import router as qa_router
+from router.badge_routes import router as badge_router
+from router.upload_routes import router as upload_router
+from router.quiz_routes import router as quiz_router
 
 
 
@@ -30,6 +34,10 @@ app.include_router(user_router)
 app.include_router(mcq_router)
 app.include_router(uploads_router) 
 app.include_router(category_router)
+app.include_router(qa_router)
+app.include_router(badge_router)
+app.include_router(upload_router)
+app.include_router(quiz_router)
 
 # ──────────────────────── ROOT ────────────────────────
 @app.get("/")

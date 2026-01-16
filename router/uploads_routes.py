@@ -164,11 +164,14 @@ def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_us
     })
     res = uploads_col.insert_one(new_doc)
     
-    # Add Points
-    users_col.update_one(
-        {"email": user_email}, 
-        {"$inc": {"contributionPoints": 50}}
-    )
+    # Add Points using contribution service
+    from services.contribution_service import ContributionService
+    ContributionService.add_points(user_email, 50, "Uploaded PDF")
+    ContributionService.increment_field(user_email, "uploadedPdfCount", 1)
+    
+    # Check badges
+    from services.badge_service import BadgeService
+    BadgeService.check_and_assign_badges(user_email)
     
     return UploadResponse(**uploads_col.find_one({"_id": res.inserted_id}))
 
@@ -179,11 +182,10 @@ def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
     res = uploads_col.delete_one({"_id": ObjectId(id), "uploaderEmail": user_email})
     if res.deleted_count == 0: raise HTTPException(404, "Not found or forbidden")
     
-    # Remove Points
-    users_col.update_one(
-        {"email": user_email}, 
-        {"$inc": {"contributionPoints": -50}}
-    )
+    # Remove Points using contribution service
+    from services.contribution_service import ContributionService
+    ContributionService.add_points(user_email, -50, "Deleted PDF")
+    ContributionService.increment_field(user_email, "uploadedPdfCount", -1)
     
     return {"message": "Deleted and points deducted"}
 
