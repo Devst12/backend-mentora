@@ -12,13 +12,12 @@ logger = logging.getLogger("MCQGame")
 
 router = APIRouter(prefix="/mcq", tags=["Game Manager"])
 
-# --- MODELS ---
 class CreateSession(BaseModel):
     playerLimit: int
     questionTime: int = 20 
     questions: Optional[List[dict]] = None 
 
-# --- GAME MANAGER ---
+
 class GameManager:
     def __init__(self):
         self.active_connections: dict[str, set[WebSocket]] = {} 

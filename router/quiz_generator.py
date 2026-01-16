@@ -254,7 +254,7 @@ def transform_llm_to_game_format(llm_questions: List[dict]) -> List[dict]:
 
 @router.post("/process_pdf")
 async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_count: int = Form(10)):
-    import time # local import for time if needed in CircuitBreaker logic (already global)
+    import time 
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_path = tmp_file.name

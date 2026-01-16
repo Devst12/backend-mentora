@@ -233,7 +233,7 @@ async def validate_and_fix_json(json_str: str) -> str:
              return fixed_clean
         except:
              logger.error("Failed to fix JSON.")
-             return "[]" # Return empty array so frontend doesn't crash
+             return "[]"
 
 async def get_master_summary(chunks: List[str]) -> str:
     sys_prompt = "You are a professional editor. Summarize strictly from text."
