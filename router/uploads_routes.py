@@ -36,14 +36,12 @@ class UploadSchema(BaseModel):
     category: str = "Others"
     commentsEnabled: bool = True
     visibility: str = "Public"
-    # 👇 ADDED: Accept image and email from frontend body
     uploaderImage: Optional[str] = None
     uploaderEmail: Optional[str] = None 
 
 class UploadResponse(UploadSchema):
     id: PyObjectId = Field(alias="_id")
     uploaderEmail: str
-    # 👇 ADDED: Return image to frontend
     uploaderImage: Optional[str] = None
     slug: str
     createdAt: datetime
@@ -64,6 +62,9 @@ def generate_slug(title: str):
     unique_suffix = datetime.now().strftime("%f")
     return f"{slugify(title)}-{unique_suffix}"
 
+# ==========================================
+# 📂 CATEGORY ROUTES
+# ==========================================
 
 @router.get("/api/categories")
 def get_categories():
@@ -75,6 +76,26 @@ def get_categories():
             "name": c.get("name", "Unnamed")
         })
     return cleaned_cats
+
+# 🔥 NEW: TRENDING TOPICS ENDPOINT 🔥
+@router.get("/api/trending")
+def get_trending_topics():
+    pipeline = [
+        # 1. Filter out documents where category is missing or empty
+        {"$match": {"category": {"$exists": True, "$ne": None, "$ne": ""}}},
+        # 2. Group by 'category' and count them
+        {"$group": {"_id": "$category", "count": {"$sum": 1}}},
+        # 3. Sort by 'count' in descending order (High to Low)
+        {"$sort": {"count": -1}},
+        # 4. Take the top 5
+        {"$limit": 5}
+    ]
+    
+    # Run aggregation
+    results = list(uploads_col.aggregate(pipeline))
+    
+    # Extract names: [{"_id": "Python", "count": 10}] -> ["Python"]
+    return {"categories": [item["_id"] for item in results]}
 
 @router.post("/api/categories", status_code=201)
 def create_category(category: CategorySchema):
@@ -162,11 +183,10 @@ def get_single_upload(id: str):
 def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_user_email)):
     new_doc = upload.dict()
     new_doc.update({
-        "uploaderEmail": user_email, # Ensure we trust the header email
+        "uploaderEmail": user_email, 
         "slug": generate_slug(upload.title),
         "createdAt": datetime.now(),
         "updatedAt": datetime.now()
-        # Note: 'uploaderImage' is already in new_doc because we added it to UploadSchema!
     })
     res = uploads_col.insert_one(new_doc)
     
