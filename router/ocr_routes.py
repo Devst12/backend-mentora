@@ -1,3 +1,4 @@
+# router/ocr_routes.py
 import os
 import asyncio
 import random
@@ -14,17 +15,18 @@ import fitz  # PyMuPDF
 from rapidocr_onnxruntime import RapidOCR
 from dotenv import load_dotenv
 from groq import Groq
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 # Load env
 load_dotenv()
 
 MAX_FILE_SIZE_MB = 10
-MAX_CHARS_PER_CHUNK = 8000 # Increased to reduce chunks/API calls
-SUMMARY_TIMEOUT = 60.0
+MAX_CHARS_PER_CHUNK = 4000
+SUMMARY_TIMEOUT = 30.0
 ENABLE_OCR = True
-MAX_PARALLEL_REQUESTS = 3 # Reduced to save server resources
+MAX_PARALLEL_REQUESTS = 5   
+MAX_CONCURRENT_RETRIES = 3 
 CIRCUIT_BREAKER_THRESHOLD = 3
 CIRCUIT_BREAKER_TIMEOUT = 60
 
@@ -37,10 +39,10 @@ MODEL_POOL = [
     "llama-3.3-70b-versatile",
 ]
 
+
 try:
-    # Optimize OCR engine settings
-    ocr_engine = RapidOCR()
-    logger.info("RapidOCR initialized successfully.")
+    ocr_engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
+    logger.info("RapidOCR initialized successfully with low-memory settings.")
 except Exception as e:
     logger.error(f"Failed to initialize RapidOCR: {e}")
     ocr_engine = None
@@ -71,6 +73,9 @@ class CircuitBreaker:
 
 
 request_semaphore = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
+retry_budget_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RETRIES)
+
+clients = []
 breaker = CircuitBreaker()
 
 keys = [
@@ -79,56 +84,79 @@ keys = [
     os.getenv("GROQ_API_KEY_3")
 ]
 
-clients = [Groq(api_key=k) for k in keys if k]
+for k in keys:
+    if k:
+        clients.append(Groq(api_key=k))
+
 if not clients:
     logger.warning("No API Keys found! LLM features will fail.")
   
 router = APIRouter()
 
+
 def extract_text_with_rapidocr(file_path: str) -> str:
+
     doc = fitz.open(file_path)
     full_text = []
     
     try:
         for page_num, page in enumerate(doc):
             page_text = page.get_text()
-            full_text.append(f"\n--- Page {page_num + 1} ---\n{page_text}")
+            full_text.append(f"\n--- Page {page_num + 1} (Text) ---\n{page_text}")
 
+          
             if ENABLE_OCR and ocr_engine:
-                try:                   
+                try:
+                   
                     image_list = page.get_images(full=True)
                     for i, img in enumerate(image_list):
                         xref = img[0]
                         try:
-                            # BUG FIX: Unpack tuple correctly (filename, image_bytes)
-                            _, image_bytes = doc.extract_image(xref)
+                            base_image = doc.extract_image(xref)
+                            image_bytes = base_image["image"]
                             
+                      
                             result, _ = ocr_engine(image_bytes)
                             
                             if result:
                                 ocr_text_list = [item[1] for item in result]
                                 ocr_text = "\n".join(ocr_text_list)
                                 if ocr_text.strip():
-                                    full_text.append(f"\n[OCR Image {i+1}]\n{ocr_text}")
+                                    full_text.append(f"\n--- Page {page_num + 1} (Image {i+1} OCR) ---\n{ocr_text}")
+                            
+                            
+                            del base_image
+                            del image_bytes
                         except Exception as img_err:
-                            logger.warning(f"Failed to OCR image {i}: {img_err}")
+                            logger.warning(f"Failed to extract/OCR image {i} on page {page_num}: {img_err}")
                             continue
+
                 except Exception as e:
                     logger.warning(f"OCR Failed on page {page_num}: {e}")
                     continue
-        doc.close()
+            
+            
+            del page_text
+            del page
+
     finally:
+        doc.close()
+        
         gc.collect()
 
     return "\n".join(full_text)
 
 def chunk_text(text: str, max_chars: int) -> List[str]:
-    """Smart chunking to respect API limits (128k context)"""
     chunks = []
     start = 0
     while start < len(text):
         end = start + max_chars
-        chunks.append(text[start:end])
+        chunk = text[start:end]
+        last_dot = chunk.rfind(".")
+        if last_dot > 500:
+            chunk = chunk[: last_dot + 1]
+            end = start + len(chunk)
+        chunks.append(chunk.strip())
         start = end
     return chunks
 
@@ -148,10 +176,9 @@ async def call_llm(prompt: str, system_prompt: str, is_retry: bool = False, temp
         for model in models:
             if not breaker.is_available(client):
                 continue
-            sem = request_semaphore 
+            sem = retry_budget_semaphore if is_retry else request_semaphore
             try:
                 async with sem:
-                    # Non-blocking Threadpool execution for I/O
                     response = await run_in_threadpool(
                         client.chat.completions.create,
                         model=model,
@@ -172,11 +199,12 @@ async def call_llm(prompt: str, system_prompt: str, is_retry: bool = False, temp
                 continue
     raise RuntimeError("All models failed.")
 
-async def safe_llm_request(prompt: str, sys_prompt: str) -> Optional[str]:
+async def safe_summarize_task(chunk: str) -> Optional[str]:
     try:
+        prompt = f"Summarize this text concisely:\n\n{chunk}"
+        sys_prompt = "You are an expert summarizer. Return only summary."
         return await call_llm(prompt, sys_prompt, is_retry=False)
-    except Exception as e:
-        logger.warning(f"LLM Request Failed (Retrying): {e}")
+    except:
         try:
             return await call_llm(prompt, sys_prompt, is_retry=True)
         except:
@@ -191,6 +219,7 @@ async def validate_and_fix_json(json_str: str) -> str:
     except:
         correction_prompt = f"Fix this JSON. Return ONLY valid JSON string.\nBad Output: {json_str}"
         fixed = await call_llm(correction_prompt, "You are a JSON fixer.", is_retry=True, temp=0.1)
+        # Avoid infinite recursion
         try:
              clean_fixed = fixed.strip().replace("```json", "").replace("```", "")
              json.loads(clean_fixed)
@@ -198,61 +227,49 @@ async def validate_and_fix_json(json_str: str) -> str:
         except:
              raise HTTPException(status_code=500, detail="Failed to generate valid JSON.")
 
+async def get_master_summary(chunks: List[str]) -> str:
+    sys_prompt = "You are a professional editor. Summarize strictly from text."
+    tasks = [safe_summarize_task(chunk) for chunk in chunks]
+    results = await asyncio.gather(*tasks)
+    valid_summaries = [s for s in results if s]
+    if not valid_summaries:
+        raise HTTPException(status_code=500, detail="Failed to generate summaries.")
+    combined_text = "\n".join(valid_summaries)
+    final_prompt = "Combine these notes into one cohesive summary covering entire document:\n" + combined_text
+    return await call_llm(final_prompt, sys_prompt, is_retry=False, temp=0.5)
+
 async def generate_mcq_logic(chunks: List[str]) -> str:
-    """
-    OPTIMIZED: 
-    Instead of summarizing every chunk (10+ API calls),
-    We pass a summarized version of the full text to the LLM.
-    This reduces load significantly.
-    """
-    
-    # 1. Create a condensed summary of the whole document (1 API call)
-    combined_text = " ".join(chunks)
-    if len(combined_text) > 20000:
-        # If massive, just use the first part for context (Safety)
-        combined_text = combined_text[:20000]
-        
-    summary_prompt = f"Summarize this text for MCQ generation:\n{combined_text}"
-    master_summary = await safe_llm_request(summary_prompt, "You are a helpful assistant.")
-
-    if not master_summary:
-        raise HTTPException(status_code=500, detail="Failed to summarize content.")
-
-    # 2. Generate MCQs from the Summary (1 API call)
+    master_summary = await get_master_summary(chunks)
     system_prompt = """
     You are a JSON API. Generate 10 DIFFERENT Multiple Choice Questions based on text.
     Constraints: NO MARKDOWN. Only JSON.
     Schema: [{"question": "str", "options": {"A":"str","B":"str","C":"str","D":"str"}, "correct": "A/B/C/D", "hint": "str"}]
     """
-    mcq_prompt = f"Based on this summary, generate 10 questions:\n{master_summary[:8000]}"
-    raw_response = await call_llm(mcq_prompt, system_prompt, is_retry=False, temp=0.8)
-    
+    raw_response = await call_llm(f"Text: {master_summary[:8000]}", system_prompt, is_retry=False, temp=0.8)
     return await validate_and_fix_json(raw_response)
 
 async def generate_summary_logic(chunks: List[str], is_long: bool) -> str:
-    combined_text = " ".join(chunks)
+    tasks = [safe_summarize_task(chunk) for chunk in chunks]
+    results = await asyncio.gather(*tasks)
+    valid_summaries = [s for s in results if s]
+    final_text = "\n".join(valid_summaries)
     mode_instruction = "Write a long detailed summary." if is_long else "Write a concise bullet summary."
-    
-    # Only 1 API Call for summary
-    final_prompt = f"{mode_instruction}\n\nText:\n{combined_text[:12000]}"
-    return await safe_llm_request(final_prompt, "You are a professional editor.")
+    final_prompt = f"{mode_instruction}\n\nBased on:\n{final_text}"
+    return await call_llm(final_prompt, "You are a professional editor.", is_retry=False, temp=0.4)
 
 @router.post("/process_pdf")
-async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), background_tasks: BackgroundTasks = BackgroundTasks()):
-    
-    # 1. Save Temp File
+async def process_pdf(file: UploadFile = File(...), mode: str = Form(...)):
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_path = tmp_file.name
         try:
-            shutil.copyfileobj(file.file, tmp_path)
+            shutil.copyfileobj(file.file, tmp_file)
             tmp_file.close() 
 
-            # File Validation
             file_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
             if file_size_mb > MAX_FILE_SIZE_MB:
                  raise HTTPException(status_code=400, detail=f"File too large ({file_size_mb:.2f}MB). Limit is {MAX_FILE_SIZE_MB}MB")
 
-            # 2. Extract Text (Threadpool - Non-Blocking)
             text = await run_in_threadpool(extract_text_with_rapidocr, tmp_path)
 
         finally:
@@ -263,20 +280,13 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), backg
     if not text.strip():
         raise HTTPException(status_code=400, detail="No text found in PDF.")
 
-    # 3. Chunk Text
     chunks = chunk_text(text, MAX_CHARS_PER_CHUNK)
     
-    # 4. Process Logic
-    try:
-        if mode == "mcq":
-            data = await generate_mcq_logic(chunks)
-        else:
-            is_long = (mode == "summary_long")
-            data = await generate_summary_logic(chunks, is_long)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Processing failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process document due to server error.")
+    if mode == "mcq":
+        data = await generate_mcq_logic(chunks)
+    else:
+        is_long = (mode == "summary_long")
+        data = await generate_summary_logic(chunks, is_long)
     
+    gc.collect()
     return {"mode": mode, "data": data}
