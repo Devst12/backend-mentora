@@ -23,7 +23,7 @@ db = client["mentora"]
 # ✅ Connect to Collections
 uploads_col = db["pdfuploads"]
 categories_col = db["categories"] 
-users_col = db["appUsers"]  # <--- Still using your correct 'appUsers'
+users_col = db["appUsers"]
 
 # --- MODELS ---
 PyObjectId = Annotated[str, BeforeValidator(str)]
@@ -36,10 +36,15 @@ class UploadSchema(BaseModel):
     category: str = "Others"
     commentsEnabled: bool = True
     visibility: str = "Public"
+    # 👇 ADDED: Accept image and email from frontend body
+    uploaderImage: Optional[str] = None
+    uploaderEmail: Optional[str] = None 
 
 class UploadResponse(UploadSchema):
     id: PyObjectId = Field(alias="_id")
     uploaderEmail: str
+    # 👇 ADDED: Return image to frontend
+    uploaderImage: Optional[str] = None
     slug: str
     createdAt: datetime
 
@@ -130,7 +135,7 @@ def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: st
         "currentPage": page, "totalPages": max(1, math.ceil(total / limit))
     }
 
-# ✅ PUBLIC: Get ALL Uploads (NO Email Required) <--- FIXED THIS
+# ✅ PUBLIC: Get ALL Uploads (NO Email Required)
 @router.get("/api/uploads")
 def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = ""):
     limit = 30
@@ -157,10 +162,11 @@ def get_single_upload(id: str):
 def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_user_email)):
     new_doc = upload.dict()
     new_doc.update({
-        "uploaderEmail": user_email,
+        "uploaderEmail": user_email, # Ensure we trust the header email
         "slug": generate_slug(upload.title),
         "createdAt": datetime.now(),
         "updatedAt": datetime.now()
+        # Note: 'uploaderImage' is already in new_doc because we added it to UploadSchema!
     })
     res = uploads_col.insert_one(new_doc)
     
