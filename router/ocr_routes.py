@@ -39,7 +39,6 @@ MODEL_POOL = [
     "llama-3.3-70b-versatile",
 ]
 
-
 try:
     ocr_engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
     logger.info("RapidOCR initialized successfully with low-memory settings.")
@@ -95,7 +94,6 @@ router = APIRouter()
 
 
 def extract_text_with_rapidocr(file_path: str) -> str:
-
     doc = fitz.open(file_path)
     full_text = []
     
@@ -104,10 +102,8 @@ def extract_text_with_rapidocr(file_path: str) -> str:
             page_text = page.get_text()
             full_text.append(f"\n--- Page {page_num + 1} (Text) ---\n{page_text}")
 
-          
             if ENABLE_OCR and ocr_engine:
                 try:
-                   
                     image_list = page.get_images(full=True)
                     for i, img in enumerate(image_list):
                         xref = img[0]
@@ -115,7 +111,6 @@ def extract_text_with_rapidocr(file_path: str) -> str:
                             base_image = doc.extract_image(xref)
                             image_bytes = base_image["image"]
                             
-                      
                             result, _ = ocr_engine(image_bytes)
                             
                             if result:
@@ -123,7 +118,6 @@ def extract_text_with_rapidocr(file_path: str) -> str:
                                 ocr_text = "\n".join(ocr_text_list)
                                 if ocr_text.strip():
                                     full_text.append(f"\n--- Page {page_num + 1} (Image {i+1} OCR) ---\n{ocr_text}")
-                            
                             
                             del base_image
                             del image_bytes
@@ -135,13 +129,11 @@ def extract_text_with_rapidocr(file_path: str) -> str:
                     logger.warning(f"OCR Failed on page {page_num}: {e}")
                     continue
             
-            
             del page_text
             del page
 
     finally:
         doc.close()
-        
         gc.collect()
 
     return "\n".join(full_text)
@@ -195,7 +187,7 @@ async def call_llm(prompt: str, system_prompt: str, is_retry: bool = False, temp
                 error_msg = str(e).lower()
                 if "429" in error_msg or "rate" in error_msg or "quota" in error_msg:
                     breaker.record_failure(client)
-                    break # Try next client
+                    break 
                 continue
     raise RuntimeError("All models failed.")
 
@@ -210,22 +202,38 @@ async def safe_summarize_task(chunk: str) -> Optional[str]:
         except:
             return None
 
+# --- IMPROVED JSON CLEANER ---
+def extract_json_structure(text: str) -> str:
+    # Look for the first '[' and the last ']'
+    start = text.find('[')
+    end = text.rfind(']')
+    
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
 async def validate_and_fix_json(json_str: str) -> str:
-    clean_str = json_str.strip()
-    clean_str = re.sub(r'```json|```', '', clean_str)
+    # 1. Try to extract pure JSON array first
+    clean_str = extract_json_structure(json_str.strip())
+    
+    # 2. Try to parse
     try:
         data = json.loads(clean_str)
         return json.dumps(data)
     except:
-        correction_prompt = f"Fix this JSON. Return ONLY valid JSON string.\nBad Output: {json_str}"
+        # 3. Retry with LLM if parsing failed
+        correction_prompt = f"Fix this JSON. Return ONLY the raw JSON list, no markdown.\nBad Output: {json_str}"
         fixed = await call_llm(correction_prompt, "You are a JSON fixer.", is_retry=True, temp=0.1)
-        # Avoid infinite recursion
+        
+        # 4. Clean the fix again
+        fixed_clean = extract_json_structure(fixed.strip())
+        
         try:
-             clean_fixed = fixed.strip().replace("```json", "").replace("```", "")
-             json.loads(clean_fixed)
-             return clean_fixed
+             json.loads(fixed_clean)
+             return fixed_clean
         except:
-             raise HTTPException(status_code=500, detail="Failed to generate valid JSON.")
+             logger.error("Failed to fix JSON.")
+             return "[]" # Return empty array so frontend doesn't crash
 
 async def get_master_summary(chunks: List[str]) -> str:
     sys_prompt = "You are a professional editor. Summarize strictly from text."
@@ -248,6 +256,25 @@ async def generate_mcq_logic(chunks: List[str]) -> str:
     raw_response = await call_llm(f"Text: {master_summary[:8000]}", system_prompt, is_retry=False, temp=0.8)
     return await validate_and_fix_json(raw_response)
 
+async def generate_qa_logic(chunks: List[str], is_long: bool) -> str:
+    master_summary = await get_master_summary(chunks)
+    if is_long:
+        system_prompt = """
+        You are a JSON API. Generate 5 In-Depth, Complex Questions based on the text.
+        The answer should be detailed (1-2 paragraphs) and comprehensive.
+        Constraints: NO MARKDOWN. Only JSON.
+        Schema: [{"question": "str", "answer": "str"}]
+        """
+    else:
+        system_prompt = """
+        You are a JSON API. Generate 8-10 Conceptual Short Answer Questions based on the text.
+        The answer should be concise (2-3 sentences).
+        Constraints: NO MARKDOWN. Only JSON.
+        Schema: [{"question": "str", "answer": "str"}]
+        """
+    raw_response = await call_llm(f"Text: {master_summary[:8000]}", system_prompt, is_retry=False, temp=0.7)
+    return await validate_and_fix_json(raw_response)
+
 async def generate_summary_logic(chunks: List[str], is_long: bool) -> str:
     tasks = [safe_summarize_task(chunk) for chunk in chunks]
     results = await asyncio.gather(*tasks)
@@ -259,7 +286,6 @@ async def generate_summary_logic(chunks: List[str], is_long: bool) -> str:
 
 @router.post("/process_pdf")
 async def process_pdf(file: UploadFile = File(...), mode: str = Form(...)):
-
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_path = tmp_file.name
         try:
@@ -284,6 +310,10 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...)):
     
     if mode == "mcq":
         data = await generate_mcq_logic(chunks)
+    elif mode == "qa_short":
+        data = await generate_qa_logic(chunks, is_long=False)
+    elif mode == "qa_long":
+        data = await generate_qa_logic(chunks, is_long=True)
     else:
         is_long = (mode == "summary_long")
         data = await generate_summary_logic(chunks, is_long)
