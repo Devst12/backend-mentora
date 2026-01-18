@@ -36,7 +36,7 @@ app.include_router(generator_router)
 app.include_router(game_router)
 app.include_router(eco_router)
 # ──────────────────────── ROOT ────────────────────────
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     return {"status": "running", "services": ["OCR", "UserSync", "MentoraQA", "Uploads"]}
 
