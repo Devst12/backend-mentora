@@ -77,7 +77,7 @@ def get_categories():
         })
     return cleaned_cats
 
-# 🔥 NEW: TRENDING TOPICS ENDPOINT 🔥
+# 🔥 TRENDING TOPICS ENDPOINT
 @router.get("/api/trending")
 def get_trending_topics():
     pipeline = [
@@ -128,7 +128,7 @@ def update_category(id: str, category: CategorySchema):
     return {"_id": id, "name": clean_name}
 
 # ==========================================
-# 🔵 2. PDF UPLOAD ROUTES
+# 🔵 PDF UPLOAD ROUTES
 # ==========================================
 
 @router.post("/api/upload-file")
@@ -143,7 +143,12 @@ async def upload_file(file: UploadFile = File(...)):
 
 # ✅ PRIVATE: Get MY Uploads (Requires Email)
 @router.get("/api/my-uploads")
-def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = "", user_email: str = Header(..., alias="x-user-email")):
+def get_my_uploads(
+    page: int = Query(1, ge=1), 
+    category: str = "All", 
+    search: str = "", 
+    user_email: str = Header(..., alias="x-user-email")
+):
     limit = 30
     skip = (page - 1) * limit
     query = {"uploaderEmail": user_email}
@@ -153,12 +158,17 @@ def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: st
     cursor = uploads_col.find(query).sort("createdAt", -1).skip(skip).limit(limit)
     return {
         "uploads": [UploadResponse(**u) for u in cursor],
-        "currentPage": page, "totalPages": max(1, math.ceil(total / limit))
+        "currentPage": page, 
+        "totalPages": max(1, math.ceil(total / limit))
     }
 
 # ✅ PUBLIC: Get ALL Uploads (NO Email Required)
 @router.get("/api/uploads")
-def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = ""):
+def get_public_uploads(
+    page: int = Query(1, ge=1), 
+    category: str = "All", 
+    search: str = ""
+):
     limit = 30
     skip = (page - 1) * limit
     query = {} 
@@ -216,7 +226,7 @@ def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
     return {"message": "Deleted and points deducted"}
 
 # ==========================================
-# 📊 3. USER STATS (Profile Page)
+# 📊 USER STATS (Profile Page)
 # ==========================================
 @router.get("/api/user-stats")
 def get_user_stats(user_email: str = Header(..., alias="x-user-email")):
