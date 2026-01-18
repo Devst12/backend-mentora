@@ -31,7 +31,7 @@ class ContributionService:
     
     @staticmethod
     def get_user_stats(user_email: str):
-        """Get user contribution statistics"""
+        """Get user contribution statistics - count from collections to match badge service"""
         user = users_col.find_one({"email": user_email})
         if not user:
             return {
@@ -42,13 +42,31 @@ class ContributionService:
                 "askQuestionCount": 0,
                 "answerQuestionCount": 0
             }
+        
+        # Count questions and answers from collections to match badge service logic
+        questions_col = db["questions"]
+        answers_col = db["answers"]
+        question_count = questions_col.count_documents({"authorId": user_email})
+        answer_count = answers_col.count_documents({"authorId": user_email})
+        
+        # Ensure completedQuizCount is a number, default to 0 if not present
+        completed_quiz_count = user.get("completedQuizCount")
+        if completed_quiz_count is None:
+            completed_quiz_count = 0
+        else:
+            # Convert to int if it's not already
+            try:
+                completed_quiz_count = int(completed_quiz_count)
+            except (ValueError, TypeError):
+                completed_quiz_count = 0
+        
         return {
             "contributionPoints": user.get("contributionPoints", 0),
             "acceptedAnswersCount": user.get("acceptedAnswersCount", 0),
             "uploadedPdfCount": user.get("uploadedPdfCount", 0),
-            "completedQuizCount": user.get("completedQuizCount", 0),
-            "askQuestionCount": user.get("askQuestionCount", 0),
-            "answerQuestionCount": user.get("answerQuestionCount", 0)
+            "completedQuizCount": completed_quiz_count,  
+            "askQuestionCount": question_count,  
+            "answerQuestionCount": answer_count  
         }
     
     @staticmethod
