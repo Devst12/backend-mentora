@@ -11,6 +11,12 @@ mongo_uri = os.getenv("MONGODB_URI")
 SECRET = os.getenv("NEXTAUTH_SECRET")
 ALGORITHM = "HS256"
 
+if not SECRET or not SECRET.strip():
+    import sys
+    print("ERROR: NEXTAUTH_SECRET environment variable is not set or is empty!", file=sys.stderr)
+    print("Please set NEXTAUTH_SECRET in your .env file or environment variables.", file=sys.stderr)
+    raise ValueError("NEXTAUTH_SECRET environment variable is required. Please set it in your .env file.")
+
 client = MongoClient(mongo_uri)
 db = client.get_default_database()
 users_collection = db["appUsers"]
@@ -54,6 +60,10 @@ async def sync_user(data: SyncUserModel):
                     "contributionPoints": 0,
                     "notesCount": 0,
                     "badgesCount": 0,
+                    "badges": [],
+                    "acceptedAnswersCount": 0,
+                    "uploadedPdfCount": 0,
+                    "completedQuizCount": 0,
                     "createdAt": datetime.now(timezone.utc),
                 },
             },

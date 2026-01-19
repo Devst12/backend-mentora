@@ -38,7 +38,14 @@ class UploadSchema(BaseModel):
     visibility: str = "Public"
     uploaderImage: Optional[str] = None
     uploaderEmail: Optional[str] = None 
-
+class UpdateUploadSchema(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    pdfUrl: Optional[str] = None
+    tags: Optional[List[str]] = None
+    category: Optional[str] = None
+    commentsEnabled: Optional[bool] = None
+    visibility: Optional[str] = None
 class UploadResponse(UploadSchema):
     id: PyObjectId = Field(alias="_id")
     uploaderEmail: str
@@ -77,7 +84,7 @@ def get_categories():
         })
     return cleaned_cats
 
-# 🔥 NEW: TRENDING TOPICS ENDPOINT 🔥
+# 🔥 TRENDING TOPICS ENDPOINT
 @router.get("/api/trending")
 def get_trending_topics():
     pipeline = [
@@ -128,7 +135,7 @@ def update_category(id: str, category: CategorySchema):
     return {"_id": id, "name": clean_name}
 
 # ==========================================
-# 🔵 2. PDF UPLOAD ROUTES
+# 🔵 PDF UPLOAD ROUTES
 # ==========================================
 
 @router.post("/api/upload-file")
@@ -143,7 +150,12 @@ async def upload_file(file: UploadFile = File(...)):
 
 # ✅ PRIVATE: Get MY Uploads (Requires Email)
 @router.get("/api/my-uploads")
-def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = "", user_email: str = Header(..., alias="x-user-email")):
+def get_my_uploads(
+    page: int = Query(1, ge=1), 
+    category: str = "All", 
+    search: str = "", 
+    user_email: str = Header(..., alias="x-user-email")
+):
     limit = 30
     skip = (page - 1) * limit
     query = {"uploaderEmail": user_email}
@@ -153,12 +165,17 @@ def get_my_uploads(page: int = Query(1, ge=1), category: str = "All", search: st
     cursor = uploads_col.find(query).sort("createdAt", -1).skip(skip).limit(limit)
     return {
         "uploads": [UploadResponse(**u) for u in cursor],
-        "currentPage": page, "totalPages": max(1, math.ceil(total / limit))
+        "currentPage": page, 
+        "totalPages": max(1, math.ceil(total / limit))
     }
 
 # ✅ PUBLIC: Get ALL Uploads (NO Email Required)
 @router.get("/api/uploads")
-def get_public_uploads(page: int = Query(1, ge=1), category: str = "All", search: str = ""):
+def get_public_uploads(
+    page: int = Query(1, ge=1), 
+    category: str = "All", 
+    search: str = ""
+):
     limit = 30
     skip = (page - 1) * limit
     query = {} 
@@ -190,14 +207,51 @@ def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_us
     })
     res = uploads_col.insert_one(new_doc)
     
-    # Add Points
-    users_col.update_one(
-        {"email": user_email}, 
-        {"$inc": {"contributionPoints": 50}}
-    )
+    # Add Points using contribution service
+    from services.contribution_service import ContributionService
+    ContributionService.add_points(user_email, 50, "Uploaded PDF")
+    ContributionService.increment_field(user_email, "uploadedPdfCount", 1)
+    
+    # Check badges
+    from services.badge_service import BadgeService
+    BadgeService.check_and_assign_badges(user_email)
     
     return UploadResponse(**uploads_col.find_one({"_id": res.inserted_id}))
+# ==========================================
+# 🔵 UPDATE UPLOAD ROUTE
+# ==========================================
 
+@router.put("/api/uploads/{id}")
+def update_upload(
+    id: str, 
+    upload_data: UpdateUploadSchema, 
+    user_email: str = Depends(get_current_user_email)
+):
+    # 1. Validate ID format
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    # 2. Create the update payload (only include fields that were actually sent)
+    update_payload = upload_data.model_dump(exclude_unset=True)
+    
+    # Always update the timestamp
+    update_payload["updatedAt"] = datetime.now()
+
+    # 3. Perform the update
+    # We check ownership: ensure the uploaderEmail matches the logged-in user
+    result = uploads_col.update_one(
+        {"_id": ObjectId(id), "uploaderEmail": user_email},
+        {"$set": update_payload}
+    )
+
+    # 4. Handle results
+    if result.matched_count == 0:
+        # If no match, either the ID doesn't exist OR the user doesn't own it
+        raise HTTPException(status_code=404, detail="Upload not found or permission denied")
+
+    # 5. Return the updated document
+    updated_doc = uploads_col.find_one({"_id": ObjectId(id)})
+    return UploadResponse(**updated_doc)
 # 🔻 PENALTY LOGIC: Delete Upload & Remove 50 Points
 @router.delete("/api/uploads/{id}")
 def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
@@ -205,16 +259,15 @@ def delete_upload(id: str, user_email: str = Depends(get_current_user_email)):
     res = uploads_col.delete_one({"_id": ObjectId(id), "uploaderEmail": user_email})
     if res.deleted_count == 0: raise HTTPException(404, "Not found or forbidden")
     
-    # Remove Points
-    users_col.update_one(
-        {"email": user_email}, 
-        {"$inc": {"contributionPoints": -50}}
-    )
+    # Remove Points using contribution service
+    from services.contribution_service import ContributionService
+    ContributionService.add_points(user_email, -50, "Deleted PDF")
+    ContributionService.increment_field(user_email, "uploadedPdfCount", -1)
     
     return {"message": "Deleted and points deducted"}
 
 # ==========================================
-# 📊 3. USER STATS (Profile Page)
+# 📊 USER STATS (Profile Page)
 # ==========================================
 @router.get("/api/user-stats")
 def get_user_stats(user_email: str = Header(..., alias="x-user-email")):
