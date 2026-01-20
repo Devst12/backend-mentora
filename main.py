@@ -14,6 +14,7 @@ from router.qa_routes import router as qa_router
 from router.badge_routes import router as badge_router
 from router.upload_routes import router as upload_router
 from router.quiz_routes import router as quiz_router
+from router.search_routes import router as search_router
 
 # from router.quiz_generator import router as generator_router
 # from router.game_manager import router as game_router
@@ -41,6 +42,7 @@ app.include_router(qa_router)
 app.include_router(badge_router)
 app.include_router(upload_router)
 app.include_router(quiz_router)
+app.include_router(search_router)
 
 # app.include_router(generator_router)
 # app.include_router(game_router)
