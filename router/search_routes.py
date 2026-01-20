@@ -45,13 +45,12 @@ class UploadResponse(BaseModel):
 @router.get("/api/search/suggestions")
 def get_search_suggestions(q: str = Query(..., min_length=1)):
     """
-    Returns partial matches (e.g. typing 'pdf' shows 'new pdf', 'old pdf', 'pdf upload').
+    Returns partial matches from Tags.
     """
     pipeline = [
         {"$unwind": "$tags"},
         {
             "$match": {
-                # CHANGED: Removed '^' to allow matching anywhere in the string
                 "tags": {"$regex": q, "$options": "i"} 
             }
         },
@@ -70,16 +69,18 @@ def search_uploads(
     limit: int = Query(10, ge=1, le=50)
 ):
     """
-    Finds ALL related files (Tags OR Title).
+    Finds files in Tags OR Title OR Category.
+    This allows clicking a 'Category' in the navbar to search that category.
     """
     limit_val = limit
     skip = (page - 1) * limit_val
     
-    # CHANGED: Strict $in removed. Using pure Regex for fuzzy matching.
+    # UPDATED LOGIC: Added "category" to the $or list
     query = {
         "$or": [
-            {"tags": {"$elemMatch": {"$regex": q, "$options": "i"}}}, # Fuzzy tag match
-            {"title": {"$regex": q, "$options": "i"}}                 # Fuzzy title match
+            {"tags": {"$elemMatch": {"$regex": q, "$options": "i"}}}, # Matches tags
+            {"title": {"$regex": q, "$options": "i"}},                 # Matches titles
+            {"category": {"$regex": q, "$options": "i"}}              # Matches categories (NEW)
         ]
     }
     
