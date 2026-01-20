@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 from typing import List, Optional
+from uuid import uuid4
 
 import fitz  # PyMuPDF
 from rapidocr_onnxruntime import RapidOCR
@@ -191,19 +192,39 @@ async def safe_summarize_task(chunk: str) -> Optional[str]:
 
 async def validate_and_fix_json(json_str: str) -> str:
     clean_str = json_str.strip()
+    # Remove markdown code blocks
     clean_str = re.sub(r'```json|```', '', clean_str)
-    try:
-        data = json.loads(clean_str)
-        return json.dumps(data)
-    except:
-        correction_prompt = f"Fix this JSON. Return ONLY valid JSON string.\nBad Output: {json_str}"
-        fixed = await call_llm(correction_prompt, "You are a JSON fixer.", is_retry=True, temp=0.1)
+    
+    # If there is text before the JSON starts, try to find the first { and last }
+    # This handles cases like "Here is the JSON: { ... }"
+    if clean_str.startswith("{") or clean_str.startswith("["):
         try:
-             clean_fixed = fixed.strip().replace("```json", "").replace("```", "")
-             json.loads(clean_fixed)
-             return clean_fixed
+            json.loads(clean_str)
+            return clean_str
         except:
-             raise HTTPException(status_code=500, detail="Failed to generate valid JSON.")
+            pass
+
+    # Attempt to find a JSON object or array within the string
+    # Look for { ... } or [ ... ]
+    match = re.search(r'(\{.*\}|\[.*\])', clean_str, re.DOTALL)
+    if match:
+        candidate = match.group(1)
+        try:
+            json.loads(candidate)
+            return candidate
+        except:
+            pass
+
+    # If still failing, ask LLM to fix it
+    correction_prompt = f"Fix this JSON. Return ONLY valid JSON string.\nBad Output: {json_str}"
+    try:
+        fixed = await call_llm(correction_prompt, "You are a JSON fixer.", is_retry=True, temp=0.1)
+        clean_fixed = fixed.strip().replace("```json", "").replace("```", "")
+        # Basic validation
+        json.loads(clean_fixed)
+        return clean_fixed
+    except:
+         raise HTTPException(status_code=500, detail="Failed to generate valid JSON.")
 
 async def get_master_summary(chunks: List[str]) -> str:
     sys_prompt = "You are a professional editor. Summarize strictly from text."
@@ -235,10 +256,19 @@ def transform_llm_to_game_format(llm_questions: List[dict]) -> List[dict]:
     LLM: {"question": "...", "options": {"A":"...", "B":"..."}, "correct": "A"}
     Game: {"id": "...", "text": "...", "options": ["...", "..."], "correct": "..."}
     """
-    from uuid import uuid4
     formatted_questions = []
     for q in llm_questions:
+        # --- FIX: Check if q is actually a dictionary ---
+        if not isinstance(q, dict):
+            logger.warning(f"Skipping invalid item (not a dict): {q}")
+            continue
+
         opts_dict = q.get("options", {})
+        if not isinstance(opts_dict, dict):
+            # Handle case where options might be a list or malformed
+            logger.warning(f"Skipping invalid options format in question: {q.get('question')}")
+            continue
+
         opt_values = [opts_dict.get("A"), opts_dict.get("B"), opts_dict.get("C"), opts_dict.get("D")]
         
         correct_key = q.get("correct", "A")
@@ -254,8 +284,6 @@ def transform_llm_to_game_format(llm_questions: List[dict]) -> List[dict]:
 
 @router.post("/process_pdf")
 async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_count: int = Form(10)):
-    import time 
-    
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_path = tmp_file.name
         try:
@@ -282,9 +310,30 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_c
         mcq_json_str = await generate_mcq_logic(chunks, mcq_count)
         
         try:
-            raw_questions = json.loads(mcq_json_str)
+            # Parse the JSON string into a Python object
+            data = json.loads(mcq_json_str)
+
+            # --- FIX: Handle cases where LLM returns a Dict instead of a List ---
+            if isinstance(data, list):
+                raw_questions = data
+            elif isinstance(data, dict):
+                # Try to find a list inside the dictionary (e.g., {"questions": [...]})
+                found_list = False
+                for key, value in data.items():
+                    if isinstance(value, list):
+                        raw_questions = value
+                        found_list = True
+                        break
+                if not found_list:
+                    # If no list found, treat the whole dict as a single item (fallback)
+                    raw_questions = [data]
+            else:
+                # Fallback for unexpected types (e.g. string, number)
+                raise ValueError("Parsed JSON is not a list or dictionary.")
+                
         except Exception as e:
             logger.error(f"JSON Parsing Error: {e}")
+            logger.error(f"Received String: {mcq_json_str[:200]}...")
             raise HTTPException(status_code=500, detail="Failed to parse LLM generated questions.")
         
         final_questions = transform_llm_to_game_format(raw_questions)
