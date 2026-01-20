@@ -1,4 +1,3 @@
-# backend/user_routes.py
 import os
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Header, Depends
@@ -28,37 +27,22 @@ class SyncUserModel(BaseModel):
     email: str
     image: str | None = None
 
+# Helper to verify NextAuth JWT
 def get_current_user_email(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header missing")
-    
     parts = authorization.split(" ")
     if len(parts) != 2 or parts[0] != "Bearer":
-        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
-    
+        raise HTTPException(status_code=401, detail="Invalid format")
     token = parts[1]
-    
-    if not SECRET or not SECRET.strip():
-        raise HTTPException(
-            status_code=500, 
-            detail="Server configuration error: NEXTAUTH_SECRET not set. Please configure NEXTAUTH_SECRET in your .env file."
-        )
-    
     try:
-        # Decode the NextAuth JWT token
-        payload = jwt.decode(token, SECRET.strip(), algorithms=[ALGORITHM], options={"verify_aud": False})
-        
-        # NextAuth tokens have email in different possible fields
+        payload = jwt.decode(token, SECRET, algorithms=[ALGORITHM], options={"verify_aud": False})
         email = payload.get("email") or payload.get("sub")
-        
         if not email:
             raise HTTPException(status_code=401, detail="Token missing email")
-        
         return email
     except JWTError as e:
-        print(f"JWT Error: {str(e)}")  # Debug log
-        print(f"Token received: {token[:50]}...")  # Debug log (first 50 chars)
-        raise HTTPException(status_code=401, detail=f"Invalid or expired token: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 @router.post("/sync-user")
 async def sync_user(data: SyncUserModel):
@@ -100,3 +84,17 @@ async def user_stats(current_user_email: str = Depends(get_current_user_email)):
         "badgesCount": user.get("badgesCount", 0),
         "image": user.get("image"),
     }
+
+# --- FULL ADMIN ROUTE ---
+@router.get("/admin/all-users")
+async def get_all_users():
+    """Returns a list of all users from the appUsers collection"""
+    try:
+        # Fetching all documents, removing _id for JSON serialization
+        users = list(users_collection.find({}, {"_id": 0}))
+        # Sort by points descending
+        users.sort(key=lambda x: x.get("contributionPoints", 0), reverse=True)
+        return users # This MUST return a list [] for frontend filter to work
+    except Exception as e:
+        print(f"Database error: {e}")
+        return [] # Return empty list on error to prevent frontend crash

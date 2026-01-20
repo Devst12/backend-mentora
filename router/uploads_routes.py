@@ -39,6 +39,15 @@ class UploadSchema(BaseModel):
     uploaderImage: Optional[str] = None
     uploaderEmail: Optional[str] = None 
 
+class UpdateUploadSchema(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    pdfUrl: Optional[str] = None
+    tags: Optional[List[str]] = None
+    category: Optional[str] = None
+    commentsEnabled: Optional[bool] = None
+    visibility: Optional[str] = None
+
 class UploadResponse(UploadSchema):
     id: PyObjectId = Field(alias="_id")
     uploaderEmail: str
@@ -68,7 +77,8 @@ def generate_slug(title: str):
 
 @router.get("/api/categories")
 def get_categories():
-    cats = list(categories_col.find({}, {"_id": 1, "name": 1}).sort("createdAt", -1))
+    # Changed sorting to use MongoDB ID (_id) as requested
+    cats = list(categories_col.find({}, {"_id": 1, "name": 1}).sort("_id", -1))
     cleaned_cats = []
     for c in cats:
         cleaned_cats.append({
@@ -101,11 +111,10 @@ def get_trending_topics():
 def create_category(category: CategorySchema):
     clean_name = category.name.strip()
     if not clean_name: raise HTTPException(400, "Name required")
-    slug = slugify(clean_name)
-    if categories_col.find_one({"slug": slug}):
-        raise HTTPException(400, "Category already exists")
+    
+    # REMOVED: Slug logic. Relying only on MongoDB ID.
     new_cat = {
-        "name": clean_name, "slug": slug,
+        "name": clean_name, 
         "createdAt": datetime.now(), "updatedAt": datetime.now(), "__v": 0
     }
     res = categories_col.insert_one(new_cat)
@@ -116,13 +125,11 @@ def update_category(id: str, category: CategorySchema):
     if not ObjectId.is_valid(id): raise HTTPException(400, "Invalid ID")
     clean_name = category.name.strip()
     if not clean_name: raise HTTPException(400, "Name required")
-    slug = slugify(clean_name)
-    existing = categories_col.find_one({"slug": slug})
-    if existing and str(existing["_id"]) != id:
-        raise HTTPException(400, "Category name already taken")
+    
+    # REMOVED: Slug lookup logic and duplicate check. Fetching strictly by ID.
     result = categories_col.update_one(
         {"_id": ObjectId(id)},
-        {"$set": {"name": clean_name, "slug": slug, "updatedAt": datetime.now()}}
+        {"$set": {"name": clean_name, "updatedAt": datetime.now()}}
     )
     if result.matched_count == 0: raise HTTPException(404, "Category not found")
     return {"_id": id, "name": clean_name}
@@ -210,6 +217,42 @@ def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_us
     BadgeService.check_and_assign_badges(user_email)
     
     return UploadResponse(**uploads_col.find_one({"_id": res.inserted_id}))
+
+# ==========================================
+# 🔵 UPDATE UPLOAD ROUTE
+# ==========================================
+
+@router.put("/api/uploads/{id}")
+def update_upload(
+    id: str, 
+    upload_data: UpdateUploadSchema, 
+    user_email: str = Depends(get_current_user_email)
+):
+    # 1. Validate ID format
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    # 2. Create the update payload (only include fields that were actually sent)
+    update_payload = upload_data.model_dump(exclude_unset=True)
+    
+    # Always update the timestamp
+    update_payload["updatedAt"] = datetime.now()
+
+    # 3. Perform the update
+    # We check ownership: ensure the uploaderEmail matches the logged-in user
+    result = uploads_col.update_one(
+        {"_id": ObjectId(id), "uploaderEmail": user_email},
+        {"$set": update_payload}
+    )
+
+    # 4. Handle results
+    if result.matched_count == 0:
+        # If no match, either the ID doesn't exist OR the user doesn't own it
+        raise HTTPException(status_code=404, detail="Upload not found or permission denied")
+
+    # 5. Return the updated document
+    updated_doc = uploads_col.find_one({"_id": ObjectId(id)})
+    return UploadResponse(**updated_doc)
 
 # 🔻 PENALTY LOGIC: Delete Upload & Remove 50 Points
 @router.delete("/api/uploads/{id}")
