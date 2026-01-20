@@ -170,6 +170,7 @@ def get_my_uploads(
     }
 
 # ✅ PUBLIC: Get ALL Uploads (NO Email Required)
+# ✅ PUBLIC: Get ALL Uploads (NO Email Required)
 @router.get("/api/uploads")
 def get_public_uploads(
     page: int = Query(1, ge=1), 
@@ -178,9 +179,13 @@ def get_public_uploads(
 ):
     limit = 30
     skip = (page - 1) * limit
-    query = {} 
+    
+    # --- ADDED THIS LINE TO FILTER PRIVATE PDFS ---
+    query = {"visibility": "Public"} 
+    
     if category != "All": query["category"] = category
     if search: query["$or"] = [{"title": {"$regex": search, "$options": "i"}}, {"tags": {"$in": [search]}}]
+    
     total = uploads_col.count_documents(query)
     cursor = uploads_col.find(query).sort("createdAt", -1).skip(skip).limit(limit)
     return {
