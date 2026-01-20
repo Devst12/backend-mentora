@@ -38,9 +38,6 @@ class UploadResponse(BaseModel):
         populate_by_name = True
         json_encoders = {datetime: lambda v: v.isoformat()}
 
-# ==========================================
-# 🔍 GOOGLE-LEVEL SEARCH ENGINE
-# ==========================================
 
 @router.get("/api/search/suggestions")
 def get_search_suggestions(q: str = Query(..., min_length=1)):

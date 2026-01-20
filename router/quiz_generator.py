@@ -310,14 +310,14 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_c
         mcq_json_str = await generate_mcq_logic(chunks, mcq_count)
         
         try:
-            # Parse the JSON string into a Python object
+           
             data = json.loads(mcq_json_str)
 
-            # --- FIX: Handle cases where LLM returns a Dict instead of a List ---
+            
             if isinstance(data, list):
                 raw_questions = data
             elif isinstance(data, dict):
-                # Try to find a list inside the dictionary (e.g., {"questions": [...]})
+               
                 found_list = False
                 for key, value in data.items():
                     if isinstance(value, list):
@@ -325,10 +325,10 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_c
                         found_list = True
                         break
                 if not found_list:
-                    # If no list found, treat the whole dict as a single item (fallback)
+                   
                     raw_questions = [data]
             else:
-                # Fallback for unexpected types (e.g. string, number)
+              
                 raise ValueError("Parsed JSON is not a list or dictionary.")
                 
         except Exception as e:

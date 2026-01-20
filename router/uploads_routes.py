@@ -15,12 +15,12 @@ load_dotenv()
 
 router = APIRouter()
 
-# --- DATABASE SETUP ---
+
 mongo_uri = os.getenv("MONGODB_URI") 
 client = MongoClient(mongo_uri)
 db = client["mentora"]
 
-# ✅ Connect to Collections
+
 uploads_col = db["pdfuploads"]
 categories_col = db["categories"] 
 users_col = db["appUsers"]
@@ -71,9 +71,6 @@ def generate_slug(title: str):
     unique_suffix = datetime.now().strftime("%f")
     return f"{slugify(title)}-{unique_suffix}"
 
-# ==========================================
-# 📂 CATEGORY ROUTES
-# ==========================================
 
 @router.get("/api/categories")
 def get_categories():
@@ -87,7 +84,7 @@ def get_categories():
         })
     return cleaned_cats
 
-# 🔥 TRENDING TOPICS ENDPOINT
+
 @router.get("/api/trending")
 def get_trending_topics():
     pipeline = [
@@ -112,7 +109,7 @@ def create_category(category: CategorySchema):
     clean_name = category.name.strip()
     if not clean_name: raise HTTPException(400, "Name required")
     
-    # REMOVED: Slug logic. Relying only on MongoDB ID.
+
     new_cat = {
         "name": clean_name, 
         "createdAt": datetime.now(), "updatedAt": datetime.now(), "__v": 0
@@ -126,7 +123,7 @@ def update_category(id: str, category: CategorySchema):
     clean_name = category.name.strip()
     if not clean_name: raise HTTPException(400, "Name required")
     
-    # REMOVED: Slug lookup logic and duplicate check. Fetching strictly by ID.
+  
     result = categories_col.update_one(
         {"_id": ObjectId(id)},
         {"$set": {"name": clean_name, "updatedAt": datetime.now()}}
@@ -134,9 +131,6 @@ def update_category(id: str, category: CategorySchema):
     if result.matched_count == 0: raise HTTPException(404, "Category not found")
     return {"_id": id, "name": clean_name}
 
-# ==========================================
-# 🔵 PDF UPLOAD ROUTES
-# ==========================================
 
 @router.post("/api/upload-file")
 async def upload_file(file: UploadFile = File(...)):
@@ -148,7 +142,7 @@ async def upload_file(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
     return {"url": f"http://127.0.0.1:8000/static/pdfs/{unique_name}"}
 
-# ✅ PRIVATE: Get MY Uploads (Requires Email)
+
 @router.get("/api/my-uploads")
 def get_my_uploads(
     page: int = Query(1, ge=1), 
@@ -169,8 +163,7 @@ def get_my_uploads(
         "totalPages": max(1, math.ceil(total / limit))
     }
 
-# ✅ PUBLIC: Get ALL Uploads (NO Email Required)
-# ✅ PUBLIC: Get ALL Uploads (NO Email Required)
+
 @router.get("/api/uploads")
 def get_public_uploads(
     page: int = Query(1, ge=1), 
@@ -200,7 +193,7 @@ def get_single_upload(id: str):
     if not doc: raise HTTPException(404, "Not found")
     return UploadResponse(**doc)
 
-# 🎁 REWARD LOGIC: Create Upload & Add 50 Points
+
 @router.post("/api/uploads", status_code=201)
 def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_user_email)):
     new_doc = upload.dict()
@@ -212,7 +205,7 @@ def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_us
     })
     res = uploads_col.insert_one(new_doc)
     
-    # Add Points using contribution service
+  
     from services.contribution_service import ContributionService
     ContributionService.add_points(user_email, 50, "Uploaded PDF")
     ContributionService.increment_field(user_email, "uploadedPdfCount", 1)
@@ -223,9 +216,6 @@ def create_upload(upload: UploadSchema, user_email: str = Depends(get_current_us
     
     return UploadResponse(**uploads_col.find_one({"_id": res.inserted_id}))
 
-# ==========================================
-# 🔵 UPDATE UPLOAD ROUTE
-# ==========================================
 
 @router.put("/api/uploads/{id}")
 def update_upload(
@@ -237,14 +227,13 @@ def update_upload(
     if not ObjectId.is_valid(id):
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    # 2. Create the update payload (only include fields that were actually sent)
+ 
     update_payload = upload_data.model_dump(exclude_unset=True)
     
     # Always update the timestamp
     update_payload["updatedAt"] = datetime.now()
 
-    # 3. Perform the update
-    # We check ownership: ensure the uploaderEmail matches the logged-in user
+    
     result = uploads_col.update_one(
         {"_id": ObjectId(id), "uploaderEmail": user_email},
         {"$set": update_payload}
