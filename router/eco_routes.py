@@ -21,7 +21,7 @@ async def audit_site(url: str):
         target_url = url
 
     try:
-        # 2. Check for API Key
+      
         if not GOOGLE_API_KEY:
             return {"status": "error", "message": "Server Error: PAGESPEED_API_KEY is missing in .env"}
 
@@ -33,24 +33,24 @@ async def audit_site(url: str):
         if 'error' in data:
             return {"status": "error", "message": data['error']['message']}
 
-        # 4. Extract Data safely
+        
         audits = data.get('lighthouseResult', {}).get('audits', {})
         network_items = audits.get('network-requests', {}).get('details', {}).get('items', [])
         
         total_bytes = sum(item.get('transferSize', 0) for item in network_items)
         total_mb = total_bytes / (1024 * 1024)
         
-        # 5. Calculate Carbon (Approximate: 0.81 kWh/GB * 442g CO2/kWh)
+        
         co2_grams = (total_bytes / 1073741824) * 0.81 * 442
 
-        # 6. Determine Grade
+       
         if total_mb < 0.5: grade = "A+"
         elif total_mb < 1.0: grade = "A"
         elif total_mb < 2.0: grade = "B"
         elif total_mb < 5.0: grade = "C"
         else: grade = "F"
 
-        # 7. Generate Issues List
+       
         issues = []
         if total_mb > 2:
             issues.append(f"High Payload: Page size is {round(total_mb, 2)} MB (Sustainable target is < 1 MB).")
@@ -62,7 +62,7 @@ async def audit_site(url: str):
         if len(network_items) > 80:
             issues.append(f"High Request Count: {len(network_items)} server requests detected. Reduce scripts/plugins.")
 
-        # 8. Generate Advice
+        
         advice = "Excellent! Your site is energy efficient."
         if total_mb > 5:
             advice = "Critical: This site is heavy. Remove unused JavaScript and compress video/images immediately."

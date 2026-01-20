@@ -134,9 +134,6 @@ class CommentResponse(BaseModel):
 class VoteRequest(BaseModel):
     voteType: str  # "upvote" or "downvote"
 
-# ==========================================
-# QUESTION ROUTES
-# ==========================================
 
 @router.post("/questions", status_code=201)
 def create_question(
@@ -194,7 +191,7 @@ def get_questions(
     total = questions_col.count_documents(query)
     questions = list(questions_col.find(query).sort("createdAt", -1).skip(skip).limit(limit))
     
-    # Add answer count for each question and ensure _id is converted to string
+ 
     result_questions = []
     for q in questions:
         answer_count = answers_col.count_documents({"questionId": str(q["_id"])})
@@ -311,7 +308,7 @@ def vote_question(
     is_upvoted = user_email in upvoted_by
     is_downvoted = user_email in downvoted_by
     
-    # Like/Unlike logic 
+   
     if vote.voteType == "upvote":
         if is_upvoted:
             # Toggle: remove upvote 
@@ -463,7 +460,7 @@ def accept_answer(
     if question["authorId"] != user_email:
         raise HTTPException(status_code=403, detail="Only question owner can accept answers")
     
-    # Mark answer as accepted (multiple accepted answers allowed)
+    
     answers_col.update_one(
         {"_id": ObjectId(answer_id)},
         {"$set": {"accepted": True}}
@@ -1042,7 +1039,6 @@ def delete_comment(
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
     
-    # Owner-only check
     if comment["authorId"] != user_email:
         raise HTTPException(status_code=403, detail="Only comment owner can delete")
     
