@@ -12,7 +12,6 @@ from typing import List, Optional
 from uuid import uuid4
 
 import fitz  # PyMuPDF
-from rapidocr_onnxruntime import RapidOCR
 from dotenv import load_dotenv
 from groq import Groq
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -24,13 +23,15 @@ router = APIRouter(prefix="/mcq", tags=["Quiz Generation"])
 
 # --- CONFIGURATION ---
 MAX_FILE_SIZE_MB = 10
-MAX_CHARS_PER_CHUNK = 4000
+# Increased chunk size slightly since we aren't summarizing anymore
+MAX_CHARS_PER_CHUNK = 8000 
 SUMMARY_TIMEOUT = 30.0
-ENABLE_OCR = True
 MAX_PARALLEL_REQUESTS = 5   
 MAX_CONCURRENT_RETRIES = 3 
 CIRCUIT_BREAKER_THRESHOLD = 3
 CIRCUIT_BREAKER_TIMEOUT = 60
+# Limit context sent to LLM to avoid token overflow (approx 6k-7k tokens)
+MAX_CONTEXT_LENGTH = 25000 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MCQGenerator")
@@ -40,14 +41,6 @@ MODEL_POOL = [
     "meta-llama/llama-4-scout-17b-16e-instruct",
     "llama-3.3-70b-versatile",
 ]
-
-# --- INITIALIZATION ---
-try:
-    ocr_engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
-    logger.info("RapidOCR initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize RapidOCR: {e}")
-    ocr_engine = None
 
 keys = [
     os.getenv("GROQ_API_KEY_1"),
@@ -91,39 +84,22 @@ request_semaphore = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
 retry_budget_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RETRIES)
 breaker = CircuitBreaker()
 
-def extract_text_with_rapidocr(file_path: str) -> str:
+def extract_text_from_pdf(file_path: str) -> str:
+    """
+    Lightweight text extraction. Only reads text layer.
+    """
     doc = fitz.open(file_path)
     full_text = []
     try:
         for page_num, page in enumerate(doc):
             page_text = page.get_text()
-            full_text.append(f"\n--- Page {page_num + 1} (Text) ---\n{page_text}")
-
-            if ENABLE_OCR and ocr_engine:
-                try:
-                    image_list = page.get_images(full=True)
-                    for i, img in enumerate(image_list):
-                        xref = img[0]
-                        try:
-                            base_image = doc.extract_image(xref)
-                            image_bytes = base_image["image"]
-                            result, _ = ocr_engine(image_bytes)
-                            if result:
-                                ocr_text_list = [item[1] for item in result]
-                                ocr_text = "\n".join(ocr_text_list)
-                                if ocr_text.strip():
-                                    full_text.append(f"\n--- Page {page_num + 1} (Image {i+1} OCR) ---\n{ocr_text}")
-                            del base_image
-                            del image_bytes
-                        except Exception as img_err:
-                            continue
-                except Exception:
-                    continue
-            del page_text
+            full_text.append(f"\n--- Page {page_num + 1} ---\n{page_text}")
             del page
+    except Exception as e:
+        logger.error(f"Error reading PDF page: {e}")
     finally:
         doc.close()
-        gc.collect()
+        gc.collect() 
     return "\n".join(full_text)
 
 def chunk_text(text: str, max_chars: int) -> List[str]:
@@ -179,24 +155,10 @@ async def call_llm(prompt: str, system_prompt: str, is_retry: bool = False, temp
                 continue
     raise RuntimeError("All models failed.")
 
-async def safe_summarize_task(chunk: str) -> Optional[str]:
-    try:
-        prompt = f"Summarize this text concisely:\n\n{chunk}"
-        sys_prompt = "You are an expert summarizer. Return only summary."
-        return await call_llm(prompt, sys_prompt, is_retry=False)
-    except:
-        try:
-            return await call_llm(prompt, sys_prompt, is_retry=True)
-        except:
-            return None
-
 async def validate_and_fix_json(json_str: str) -> str:
     clean_str = json_str.strip()
-    # Remove markdown code blocks
     clean_str = re.sub(r'```json|```', '', clean_str)
     
-    # If there is text before the JSON starts, try to find the first { and last }
-    # This handles cases like "Here is the JSON: { ... }"
     if clean_str.startswith("{") or clean_str.startswith("["):
         try:
             json.loads(clean_str)
@@ -204,8 +166,6 @@ async def validate_and_fix_json(json_str: str) -> str:
         except:
             pass
 
-    # Attempt to find a JSON object or array within the string
-    # Look for { ... } or [ ... ]
     match = re.search(r'(\{.*\}|\[.*\])', clean_str, re.DOTALL)
     if match:
         candidate = match.group(1)
@@ -215,62 +175,71 @@ async def validate_and_fix_json(json_str: str) -> str:
         except:
             pass
 
-    # If still failing, ask LLM to fix it
     correction_prompt = f"Fix this JSON. Return ONLY valid JSON string.\nBad Output: {json_str}"
     try:
         fixed = await call_llm(correction_prompt, "You are a JSON fixer.", is_retry=True, temp=0.1)
         clean_fixed = fixed.strip().replace("```json", "").replace("```", "")
-        # Basic validation
         json.loads(clean_fixed)
         return clean_fixed
     except:
          raise HTTPException(status_code=500, detail="Failed to generate valid JSON.")
 
-async def get_master_summary(chunks: List[str]) -> str:
-    sys_prompt = "You are a professional editor. Summarize strictly from text."
-    tasks = [safe_summarize_task(chunk) for chunk in chunks]
-    results = await asyncio.gather(*tasks)
-    valid_summaries = [s for s in results if s]
-    if not valid_summaries:
-        raise HTTPException(status_code=500, detail="Failed to generate summaries.")
-    combined_text = "\n".join(valid_summaries)
-    final_prompt = "Combine these notes into one cohesive summary covering entire document:\n" + combined_text
-    return await call_llm(final_prompt, sys_prompt, is_retry=False, temp=0.5)
-
+# --- CHANGED: Direct Generation Logic (No Summary) ---
 async def generate_mcq_logic(chunks: List[str], mcq_count: int = 10) -> str:
-    master_summary = await get_master_summary(chunks)
+    """
+    Directly feeds text chunks to LLM to generate questions.
+    skips the summarization step.
+    """
+    # 1. Join chunks into a single context string
+    full_context = "\n".join(chunks)
     
-    # DYNAMIC PROMPT
+    # 2. Truncate if too long to prevent 502/Token Errors
+    # Keeping it under ~25k chars ensures we don't blow up the LLM context window
+    if len(full_context) > MAX_CONTEXT_LENGTH:
+        logger.warning(f"Text too long ({len(full_context)} chars). Truncating to {MAX_CONTEXT_LENGTH} chars.")
+        full_context = full_context[:MAX_CONTEXT_LENGTH] + "...[truncated]"
+
+    # 3. Dynamic Prompt
     system_prompt = f"""
-    You are a JSON API. Generate EXACTLY {mcq_count} DIFFERENT Multiple Choice Questions based on text.
-    Constraints: NO MARKDOWN. Only JSON.
-    Schema: [{{"question": "str", "options": {{"A":"str","B":"str","C":"str","D":"str"}}, "correct": "A/B/C/D", "hint": "str"}}]
+    You are a Quiz Generator API. 
+    Task: Generate EXACTLY {mcq_count} DIFFERENT Multiple Choice Questions based on the provided text.
+    
+    Output Rules:
+    1. Return ONLY valid JSON. No markdown formatting.
+    2. Format: List of objects.
+    3. Schema: 
+    [
+      {{
+        "question": "The question text here?",
+        "options": {{
+          "A": "Option 1",
+          "B": "Option 2",
+          "C": "Option 3",
+          "D": "Option 4"
+        }},
+        "correct": "A",
+        "hint": "A short hint"
+      }}
+    ]
     """
     
-    raw_response = await call_llm(f"Text: {master_summary[:8000]}", system_prompt, is_retry=False, temp=0.8)
+    user_prompt = f"Here is the text content:\n\n{full_context}\n\nGenerate {mcq_count} MCQs now."
+    
+    # 4. Call LLM directly
+    raw_response = await call_llm(user_prompt, system_prompt, is_retry=False, temp=0.7)
     return await validate_and_fix_json(raw_response)
 
 def transform_llm_to_game_format(llm_questions: List[dict]) -> List[dict]:
-    """
-    Converts LLM output format to Game Manager format.
-    LLM: {"question": "...", "options": {"A":"...", "B":"..."}, "correct": "A"}
-    Game: {"id": "...", "text": "...", "options": ["...", "..."], "correct": "..."}
-    """
     formatted_questions = []
     for q in llm_questions:
-        # --- FIX: Check if q is actually a dictionary ---
         if not isinstance(q, dict):
-            logger.warning(f"Skipping invalid item (not a dict): {q}")
             continue
 
         opts_dict = q.get("options", {})
         if not isinstance(opts_dict, dict):
-            # Handle case where options might be a list or malformed
-            logger.warning(f"Skipping invalid options format in question: {q.get('question')}")
             continue
 
         opt_values = [opts_dict.get("A"), opts_dict.get("B"), opts_dict.get("C"), opts_dict.get("D")]
-        
         correct_key = q.get("correct", "A")
         correct_answer_text = opts_dict.get(correct_key)
 
@@ -284,6 +253,7 @@ def transform_llm_to_game_format(llm_questions: List[dict]) -> List[dict]:
 
 @router.post("/process_pdf")
 async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_count: int = Form(10)):
+    # Create temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_path = tmp_file.name
         try:
@@ -294,7 +264,8 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_c
             if file_size_mb > MAX_FILE_SIZE_MB:
                  raise HTTPException(status_code=400, detail=f"File too large ({file_size_mb:.2f}MB). Limit is {MAX_FILE_SIZE_MB}MB")
 
-            text = await run_in_threadpool(extract_text_with_rapidocr, tmp_path)
+            # Lightweight extraction
+            text = await run_in_threadpool(extract_text_from_pdf, tmp_path)
 
         finally:
             if os.path.exists(tmp_path):
@@ -302,22 +273,20 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_c
             gc.collect()
     
     if not text.strip():
-        raise HTTPException(status_code=400, detail="No text found in PDF.")
+        raise HTTPException(status_code=400, detail="No text found in PDF. Scanned PDFs are not supported.")
 
     chunks = chunk_text(text, MAX_CHARS_PER_CHUNK)
     
     if mode == "mcq":
+        # Calls the new direct generation function
         mcq_json_str = await generate_mcq_logic(chunks, mcq_count)
         
         try:
-           
             data = json.loads(mcq_json_str)
-
             
             if isinstance(data, list):
                 raw_questions = data
             elif isinstance(data, dict):
-               
                 found_list = False
                 for key, value in data.items():
                     if isinstance(value, list):
@@ -325,10 +294,8 @@ async def process_pdf(file: UploadFile = File(...), mode: str = Form(...), mcq_c
                         found_list = True
                         break
                 if not found_list:
-                   
                     raw_questions = [data]
             else:
-              
                 raise ValueError("Parsed JSON is not a list or dictionary.")
                 
         except Exception as e:
